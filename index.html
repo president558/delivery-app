@@ -3,255 +3,167 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>配達アプリ - カメラ伝票読取・完了時刻記録・配達先別在宅分析</title>
+  <title>配達アプリ（カメラ読取・地図ピン立て・在宅率分析）</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- 日本語OCRエンジン (Tesseract.js) -->
+  <!-- カメラOCR・バーコードライブラリ（無料・CDN） -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <!-- バーコード・QRコードスキャンエンジン (html5-qrcode) -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <!-- 無料地図エンジン Leaflet.js（APIキー不要・維持費0円） -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              700: '#0369a1',
+              800: '#075985',
+              900: '#0f172a',
+            }
+          }
+        }
+      }
+    }
+  </script>
   <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
-      -webkit-tap-highlight-color: transparent;
-      background-color: #f1f5f9;
-      color: #0f172a;
-      padding-bottom: 96px;
+    input, button, select, textarea { touch-action: manipulation; }
+    .custom-pin {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 9999px;
+      color: white;
+      font-weight: 900;
+      font-size: 12px;
+      border: 2.5px solid white;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.45);
     }
-    .btn-press:active {
-      transform: scale(0.96);
-    }
-    input, select, textarea {
-      font-size: 16px !important;
-    }
+    @page { size: A4 portrait; margin: 10mm; }
     @media print {
-      .no-print { display: none !important; }
-      body { background: white; padding: 0; }
-      .print-box { box-shadow: none !important; border: 1px solid #cbd5e1 !important; }
+      header, nav, .no-print, #toastNotification, #btnScrollTop, #cameraModal { display: none !important; }
+      body { background: white !important; padding: 0 !important; }
+      #content-report { display: block !important; }
+      #printable-delivery-area {
+        border: 2px solid #0f172a !important;
+        box-shadow: none !important;
+        width: 100% !important;
+      }
     }
   </style>
 </head>
-<body class="antialiased selection:bg-blue-200">
+<body class="bg-slate-100 text-slate-900 font-sans pb-28 antialiased min-h-screen">
 
   <!-- トースト通知 -->
-  <div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none opacity-0 transition-all duration-300 bg-slate-900 text-white px-5 py-3 rounded-full shadow-xl text-sm font-bold flex items-center gap-2 whitespace-nowrap">
-    <span id="toast-icon">✅</span>
-    <span id="toast-msg">保存しました</span>
-  </div>
-
-  <!-- カメラ伝票読取モーダル（OCR文字認識 ＋ バーコード両対応・全環境フォールバック完備） -->
-  <div id="camera-modal" class="fixed inset-0 z-50 hidden bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-3 no-print">
-    <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]">
-      <div class="bg-slate-900 text-white px-4 py-3 flex items-center justify-between shrink-0">
-        <div class="flex items-center gap-2">
-          <span class="text-xl">📷</span>
-          <h3 class="font-extrabold text-sm sm:text-base">カメラで伝票読取（文字OCR / バーコード）</h3>
-        </div>
-        <button onclick="closeCameraModal()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs font-extrabold px-3 py-1.5 rounded-lg btn-press">✕ 閉じる</button>
-      </div>
-
-      <div class="grid grid-cols-2 bg-slate-100 p-1.5 gap-1.5 border-b border-slate-200 shrink-0">
-        <button id="scan-mode-ocr-btn" onclick="switchScanMode('ocr')" class="py-2.5 rounded-xl text-xs sm:text-sm font-extrabold bg-blue-600 text-white shadow-xs transition">
-          📝 宛先・住所の文字読取 (OCR)
-        </button>
-        <button id="scan-mode-barcode-btn" onclick="switchScanMode('barcode')" class="py-2.5 rounded-xl text-xs sm:text-sm font-extrabold bg-white text-slate-700 border border-slate-300 transition">
-          ▌▌▌ バーコード・QR読取
-        </button>
-      </div>
-
-      <div class="p-4 overflow-y-auto space-y-4">
-        <!-- 環境診断バナー（HTTPS外・プレビュー環境時の案内） -->
-        <div id="camera-env-notice" class="hidden bg-amber-50 border border-amber-300 rounded-xl p-2.5 text-xs text-amber-900 space-y-1">
-          <p class="font-extrabold">⚠️ 現在の表示環境ではライブカメラが制限されています</p>
-          <p id="camera-env-reason" class="text-[11px] leading-relaxed"></p>
-          <p class="text-[11px] font-bold text-blue-800">👉 下の「📸 カメラ起動して撮影」または「🖼️ アルバム画像を選択」ボタンならそのまま読み取れます！</p>
-        </div>
-
-        <!-- ① OCR（文字認識）パネル -->
-        <div id="panel-ocr" class="space-y-3">
-          <p class="text-xs text-slate-600 leading-relaxed">
-            伝票の<strong>「お届け先（住所・名前・部屋番号）」</strong>が大きく映るように撮影すると、文字を自動認識して配達先欄へ入力します。
-          </p>
-
-          <!-- ライブカメラプレビュー枠 -->
-          <div id="ocr-live-box" class="relative bg-black rounded-xl overflow-hidden aspect-4/3 flex items-center justify-center border border-slate-300">
-            <video id="ocr-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
-            <div class="absolute inset-4 border-2 border-dashed border-amber-400/80 rounded-lg pointer-events-none flex items-end justify-center pb-2">
-              <span class="bg-black/65 text-amber-300 text-[11px] font-bold px-2.5 py-0.5 rounded">枠内に宛先ラベルを合わせて撮影</span>
-            </div>
-            <div id="ocr-camera-fallback-overlay" class="hidden absolute inset-0 bg-slate-900/95 text-white p-4 flex flex-col items-center justify-center text-center space-y-2.5">
-              <p class="text-xs font-extrabold text-amber-400">ライブカメラを起動できませんでした</p>
-              <p id="ocr-camera-err-detail" class="text-[11px] text-slate-300 leading-relaxed"></p>
-              <button onclick="startOcrCamera()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold px-3.5 py-2 rounded-lg btn-press">
-                🔄 ライブカメラを再試行
-              </button>
-            </div>
-          </div>
-
-          <canvas id="ocr-canvas" class="hidden"></canvas>
-
-          <!-- 3つの入力ルート（ライブ撮影 / スマホ標準カメラ直起動 / アルバム選択） -->
-          <div class="space-y-2">
-            <button id="btn-live-ocr-capture" onclick="captureAndRunOcr()" class="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-xl shadow btn-press text-sm flex items-center justify-center gap-1.5">
-              <span>📷</span> ライブ画面を撮影して文字読取
-            </button>
-            <div class="grid grid-cols-2 gap-2">
-              <label class="h-12 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-xl shadow btn-press text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer text-center px-2">
-                <span>📸</span> カメラ起動して撮影
-                <input type="file" accept="image/*" capture="environment" class="hidden" onchange="handleImageFileOcr(event)">
-              </label>
-              <label class="h-12 bg-slate-700 hover:bg-slate-600 text-white font-extrabold rounded-xl shadow btn-press text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer text-center px-2">
-                <span>🖼️</span> アルバム・画像選択
-                <input type="file" accept="image/*" class="hidden" onchange="handleImageFileOcr(event)">
-              </label>
-            </div>
-          </div>
-
-          <div id="ocr-progress-box" class="hidden bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-1.5">
-            <div class="flex items-center justify-between text-xs font-extrabold text-blue-800">
-              <span id="ocr-status-text">⏳ 日本語文字を解析中...</span>
-              <span id="ocr-progress-pct">0%</span>
-            </div>
-            <div class="w-full bg-blue-200 rounded-full h-2 overflow-hidden">
-              <div id="ocr-progress-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-200" style="width: 10%"></div>
-            </div>
-          </div>
-
-          <div id="ocr-result-box" class="hidden bg-emerald-50 border border-emerald-300 rounded-xl p-3 space-y-2.5">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-extrabold text-emerald-900">✅ 読取結果（必要に応じて修正してください）</span>
-              <button onclick="cleanOcrText()" class="text-[11px] bg-white border border-emerald-300 text-emerald-800 font-bold px-2 py-0.5 rounded">余分な空白を整理</button>
-            </div>
-            <div>
-              <label class="block text-[11px] font-bold text-slate-600 mb-0.5">配達先（宛先・住所）</label>
-              <textarea id="ocr-dest-input" rows="2" class="w-full border border-emerald-400 bg-white rounded-lg p-2 text-sm font-bold"></textarea>
-            </div>
-            <div>
-              <label class="block text-[11px] font-bold text-slate-600 mb-0.5">備考（電話番号・追跡番号・指定など）</label>
-              <input type="text" id="ocr-memo-input" placeholder="任意メモ" class="w-full border border-slate-300 bg-white rounded-lg px-2.5 py-1.5 text-xs">
-            </div>
-            <button onclick="confirmOcrToList()" class="w-full h-11 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl shadow btn-press text-sm">
-              ＋ この内容で配達先リストに追加
-            </button>
-          </div>
-        </div>
-
-        <!-- ② バーコード・QRスキャンパネル（ライブ連続読取 ＋ 写真撮影/画像読取両対応） -->
-        <div id="panel-barcode" class="hidden space-y-3">
-          <p class="text-xs text-slate-600 leading-relaxed">
-            伝票の<strong>「追跡番号バーコード」や「QRコード」</strong>をカメラにかざすか、下のボタンで撮影・画像選択して読み取ります。
-          </p>
-
-          <!-- ライブバーコードスキャナー枠 -->
-          <div class="relative rounded-xl overflow-hidden border border-slate-300 bg-black min-h-[220px]">
-            <div id="barcode-reader" class="w-full"></div>
-            <div id="barcode-fallback-overlay" class="hidden bg-slate-900 text-white p-4 flex flex-col items-center justify-center text-center space-y-2.5 min-h-[220px]">
-              <p class="text-xs font-extrabold text-amber-400">ライブバーコードカメラを起動できませんでした</p>
-              <p id="barcode-err-detail" class="text-[11px] text-slate-300 leading-relaxed"></p>
-              <button onclick="startBarcodeScanner()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold px-3.5 py-2 rounded-lg btn-press">
-                🔄 ライブスキャナーを再試行
-              </button>
-            </div>
-          </div>
-
-          <!-- 写真撮影・画像ファイルからのバーコード読取（ライブカメラ不可環境でも100%動作） -->
-          <div class="grid grid-cols-2 gap-2">
-            <label class="h-12 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-xl shadow btn-press text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer text-center px-2">
-              <span>📸</span> カメラでバーコード撮影
-              <input type="file" accept="image/*" capture="environment" class="hidden" onchange="handleBarcodeImageFile(event)">
-            </label>
-            <label class="h-12 bg-slate-700 hover:bg-slate-600 text-white font-extrabold rounded-xl shadow btn-press text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer text-center px-2">
-              <span>🖼️</span> バーコード画像を選択
-              <input type="file" accept="image/*" class="hidden" onchange="handleBarcodeImageFile(event)">
-            </label>
-          </div>
-          <!-- ファイル解析用非表示コンテナ -->
-          <div id="barcode-file-reader" class="hidden"></div>
-
-          <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-extrabold text-slate-700">📦 今回の読取スキャン履歴</span>
-              <span id="scanned-session-count" class="text-xs font-extrabold text-blue-600">0 件追加済</span>
-            </div>
-            <div id="scanned-session-list" class="text-xs text-slate-600 space-y-1 max-h-28 overflow-y-auto">
-              <p class="text-slate-400">バーコードをかざすか、上のボタンで撮影してください...</p>
-            </div>
-          </div>
-        </div>
-      </div>
+  <div id="toastNotification" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 opacity-0 pointer-events-none max-w-sm w-11/12">
+    <div id="toastContent" class="p-3.5 rounded-xl shadow-xl border text-xs font-bold flex items-center gap-2.5 bg-slate-900 text-white border-slate-700">
+      <span id="toastIcon" class="text-base">ℹ️</span>
+      <span id="toastMsg" class="flex-1 leading-snug">メッセージ</span>
     </div>
   </div>
 
   <!-- ヘッダー -->
-  <header class="bg-slate-900 text-white sticky top-0 z-40 shadow-md no-print">
-    <div class="max-w-4xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
-      <div class="flex items-center gap-2">
-        <span class="text-2xl">🚚</span>
-        <div>
-          <h1 class="text-base sm:text-lg font-extrabold tracking-tight leading-tight">配達アプリ <span class="text-xs font-normal text-blue-400 ml-1">LOG & ANALYTICS</span></h1>
-          <p id="header-driver-info" class="text-[11px] text-slate-300 truncate max-w-[220px] sm:max-w-md">ドライバー未設定 | 車両未登録</p>
+  <header class="bg-brand-900 text-white sticky top-0 z-30 shadow-md">
+    <div class="max-w-3xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] px-2 py-0.5 bg-sky-500 text-slate-950 font-black rounded">地図ピン＆OCR</span>
+          <h1 class="text-base sm:text-lg font-extrabold tracking-tight">配達記録・マップナビアプリ</h1>
         </div>
+        <p id="headerDriverLabel" class="text-xs text-slate-300 mt-0.5">ドライバー: 未設定 | コース: 通常便</p>
       </div>
-      <div class="flex items-center gap-2">
-        <input type="date" id="target-date" class="bg-slate-800 text-white text-sm font-bold px-2.5 py-1.5 rounded-lg border border-slate-700 focus:outline-none focus:border-blue-400">
+      <div class="flex items-center gap-1.5 bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700">
+        <button type="button" onclick="changeDate(-1)" class="p-1 hover:bg-slate-700 rounded text-xs">◀</button>
+        <input type="date" id="deliveryDateInput" onchange="onDateChange(this.value)" class="bg-slate-900 text-white border-0 rounded px-1.5 py-0.5 text-xs font-bold focus:outline-none">
+        <button type="button" onclick="changeDate(1)" class="p-1 hover:bg-slate-700 rounded text-xs">▶</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- メインコンテナ -->
+  <main class="max-w-3xl mx-auto px-3.5 pt-3.5 space-y-3.5">
+
+    <!-- 上部KPIダッシュボード -->
+    <div class="grid grid-cols-4 gap-2 text-center">
+      <div class="bg-white p-2.5 rounded-xl border border-slate-200 shadow-sm">
+        <span class="text-[11px] text-slate-500 font-bold block">総件数</span>
+        <span id="kpiTotal" class="text-lg sm:text-xl font-black text-slate-900 font-mono">0</span>
+      </div>
+      <div class="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200 shadow-sm">
+        <span class="text-[11px] text-emerald-800 font-bold block">✅ 配達完了</span>
+        <span id="kpiCompleted" class="text-lg sm:text-xl font-black text-emerald-700 font-mono">0</span>
+      </div>
+      <div class="bg-rose-50 p-2.5 rounded-xl border border-rose-200 shadow-sm">
+        <span class="text-[11px] text-rose-800 font-bold block">🔄 不在持戻</span>
+        <span id="kpiAbsent" class="text-lg sm:text-xl font-black text-rose-700 font-mono">0</span>
+      </div>
+      <div class="bg-sky-50 p-2.5 rounded-xl border border-sky-200 shadow-sm">
+        <span class="text-[11px] text-sky-900 font-bold block">完了率</span>
+        <span id="kpiRate" class="text-lg sm:text-xl font-black text-brand-800 font-mono">0%</span>
       </div>
     </div>
 
-    <!-- ナビゲーションタブ（5タブ構成） -->
-    <nav class="bg-slate-800 border-t border-slate-700">
-      <div class="max-w-4xl mx-auto grid grid-cols-5 text-center text-[11px] sm:text-sm font-bold">
-        <button onclick="switchTab('ops')" id="tab-ops" class="py-3 border-b-4 border-blue-500 text-white bg-slate-700/50 transition">① 配達先</button>
-        <button onclick="switchTab('analytics')" id="tab-analytics" class="py-3 border-b-4 border-transparent text-slate-400 hover:text-white transition">② 在宅分析</button>
-        <button onclick="switchTab('check')" id="tab-check" class="py-3 border-b-4 border-transparent text-slate-400 hover:text-white transition">③ 点呼点検</button>
-        <button onclick="switchTab('finance')" id="tab-finance" class="py-3 border-b-4 border-transparent text-slate-400 hover:text-white transition">④ 売上経費</button>
-        <button onclick="switchTab('report')" id="tab-report" class="py-3 border-b-4 border-transparent text-slate-400 hover:text-white transition">⑤ 日報送信</button>
-      </div>
-    </nav>
-  </header>
+    <!-- ナビゲーションタブ（4タブ構成） -->
+    <div class="grid grid-cols-4 gap-1 bg-white rounded-xl p-1 shadow-sm border border-slate-200 text-xs font-extrabold text-slate-600 no-print">
+      <button type="button" onclick="switchTab('list')" id="tab-list" class="py-2.5 rounded-lg text-center bg-brand-800 text-white shadow-sm transition-colors">
+        ① 配達先
+      </button>
+      <button type="button" onclick="switchTab('map')" id="tab-map" class="py-2.5 rounded-lg text-center hover:bg-slate-50 transition-colors text-sky-800">
+        ② 地図ピン
+      </button>
+      <button type="button" onclick="switchTab('analytics')" id="tab-analytics" class="py-2.5 rounded-lg text-center hover:bg-slate-50 transition-colors">
+        ③ 在宅分析
+      </button>
+      <button type="button" onclick="switchTab('report')" id="tab-report" class="py-2.5 rounded-lg text-center hover:bg-slate-50 transition-colors">
+        ④ 日報送信
+      </button>
+    </div>
 
-  <main class="max-w-4xl mx-auto p-3 sm:p-5 space-y-4">
+    <!-- TAB 1: 配達先リスト ＆ カメラ読取 -->
+    <div id="content-list" class="space-y-3.5">
 
-    <!-- ==================== TAB 1: 配達先・完了時間記録 ==================== -->
-    <div id="view-ops" class="space-y-4">
-
-      <!-- ドライバー・車両設定 -->
-      <details class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden no-print">
-        <summary class="px-4 py-3 bg-slate-50 font-bold text-sm text-slate-700 cursor-pointer flex items-center justify-between select-none">
-          <span>👤 ドライバー情報・車両・シート連携設定</span>
-          <span class="text-xs text-blue-600">開閉 ▼</span>
+      <!-- 設定アコーディオン -->
+      <details id="settingsAccordion" class="bg-white rounded-xl shadow-sm border border-slate-200 text-xs overflow-hidden group">
+        <summary class="px-3.5 py-2.5 bg-slate-50 font-bold text-slate-700 flex items-center justify-between cursor-pointer select-none">
+          <span class="flex items-center gap-1.5">
+            <span>👤</span>
+            <span>ドライバー情報・よく使うエリア・スプレッドシート連携設定</span>
+          </span>
+          <span class="text-[10px] text-brand-700 font-bold group-open:rotate-180 transition-transform">▼</span>
         </summary>
-        <div class="p-4 border-t border-slate-200 space-y-3 text-sm">
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div class="p-3.5 space-y-3 bg-white border-t border-slate-100">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1">ドライバー氏名</label>
-              <input type="text" id="prof-driver" placeholder="例: 山田 太郎" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="saveProfile()">
+              <label class="block text-[11px] font-bold text-slate-700 mb-1">ドライバー名</label>
+              <input type="text" id="cfgDriver" placeholder="例: 山田 太郎" oninput="saveSettings()" class="w-full p-2 border border-slate-200 rounded-lg text-xs bg-slate-50">
             </div>
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1">所属（屋号・会社名）</label>
-              <input type="text" id="prof-company" placeholder="例: River130 配送事業部" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="saveProfile()">
+              <label class="block text-[11px] font-bold text-slate-700 mb-1">車両番号</label>
+              <input type="text" id="cfgVehicle" placeholder="例: 相模 480 あ 12-34" oninput="saveSettings()" class="w-full p-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono">
             </div>
             <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1">営業所・拠点</label>
-              <input type="text" id="prof-office" placeholder="例: 相模原営業所" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="saveProfile()">
-            </div>
-            <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1">車両番号（ナンバー）</label>
-              <input type="text" id="prof-vehicle" placeholder="例: 相模 480 あ 12-34" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="saveProfile()">
-            </div>
-            <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1">標準担当コース</label>
-              <input type="text" id="prof-course" placeholder="例: 中央区エリア01" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="saveProfile()">
-            </div>
-            <div>
-              <label class="block text-xs font-bold text-slate-500 mb-1">標準点呼執行者</label>
-              <input type="text" id="prof-executor" placeholder="例: 自主確認" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="saveProfile()">
+              <label class="block text-[11px] font-bold text-slate-700 mb-1">担当コース・元請</label>
+              <input type="text" id="cfgCourse" placeholder="例: 相模原中央01便" oninput="saveSettings()" class="w-full p-2 border border-slate-200 rounded-lg text-xs bg-slate-50">
             </div>
           </div>
 
+          <!-- よく使う配達先プリセット管理 -->
           <div class="pt-2 border-t border-slate-100">
-            <label class="block text-xs font-bold text-slate-500 mb-1">📊 Googleスプレッドシート連携URL（GASウェブアプリURL）</label>
-            <input type="url" id="prof-gas-url" placeholder="https://script.google.com/macros/s/.../exec" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs" oninput="saveProfile()">
-            <div class="mt-2">
-              <button onclick="copyGasScript()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-lg btn-press">
+            <label class="block text-[11px] font-bold text-slate-700 mb-1">📍 よく使う配達先・エリアのカスタム登録</label>
+            <div id="presetTagsContainer" class="flex flex-wrap gap-1.5 mb-2"></div>
+            <div class="flex gap-1.5">
+              <input type="text" id="newPresetInput" placeholder="例: 相模原市中央区中央1-1-1 〇〇マンション" class="flex-1 p-2 border border-slate-200 rounded-lg text-xs bg-slate-50">
+              <button type="button" onclick="addPreset()" class="px-3 py-2 bg-brand-800 text-white font-bold rounded-lg text-xs">＋ 追加</button>
+            </div>
+          </div>
+
+          <!-- GAS連携設定（BYOD空欄初期値） -->
+          <div class="pt-2 border-t border-slate-100 space-y-1.5">
+            <label class="block text-[11px] font-bold text-emerald-800">📊 Googleスプレッドシート連携URL（AppSheet2シート対応）</label>
+            <input type="url" id="cfgGasUrl" placeholder="https://script.google.com/macros/s/.../exec" oninput="saveSettings()" class="w-full p-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-mono">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] text-slate-500">※初期値は空欄（端末内に自動保存）</span>
+              <button type="button" onclick="copyDeliveryGasCode()" class="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-bold rounded border border-emerald-200 text-[11px]">
                 📋 スプレッドシート自動蓄積GASコードをコピー
               </button>
             </div>
@@ -259,385 +171,253 @@
         </div>
       </details>
 
-      <!-- よく使う配達先プリセット設定 -->
-      <details class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden no-print">
-        <summary class="px-4 py-3 bg-slate-50 font-bold text-sm text-slate-700 cursor-pointer flex items-center justify-between select-none">
-          <span>⚙️ よく行く配達先・エリアのクイック登録</span>
-          <span class="text-xs text-blue-600">編集 ▼</span>
-        </summary>
-        <div class="p-4 border-t border-slate-200 space-y-3 text-sm">
-          <label class="block text-xs font-bold text-slate-600">よく配達するマンション名・企業名・町名を登録するとワンタップで追加できます</label>
-          <div class="flex gap-2">
-            <input type="text" id="new-dest-chip" placeholder="例: 〇〇マンション / 株式会社△△ / 中央1丁目" class="flex-1 border border-slate-300 rounded-lg px-3 py-2">
-            <button onclick="addCustomDestChip()" class="bg-blue-600 text-white font-bold px-4 py-2 rounded-lg btn-press shrink-0">追加</button>
-          </div>
-          <div id="custom-dest-list" class="flex flex-wrap gap-2 pt-1"></div>
-        </div>
-      </details>
-
-      <!-- 配達個数サマリー＆カウンター -->
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-          <h2 class="font-extrabold text-base text-slate-800">📦 配達状況サマリー</h2>
+      <!-- 配達先登録アクションバー（カメラ読取 ＋ 手動追加） -->
+      <section class="bg-white rounded-xl p-3.5 shadow-sm border border-slate-200 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+          <h2 class="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+            <span>📦</span>
+            <span>配達先 ＆ 配達完了時間リスト</span>
+          </h2>
           <div class="flex items-center gap-2">
-            <span id="delivery-rate-badge" class="bg-emerald-100 text-emerald-800 text-xs font-extrabold px-2.5 py-1 rounded-full">完了率: 0%</span>
-            <button onclick="switchTab('analytics')" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-extrabold px-2.5 py-1 rounded-full btn-press no-print">
-              📊 在宅分析を見る
+            <button type="button" onclick="openCameraModal('ocr')" class="py-2 px-3 bg-slate-900 hover:bg-slate-800 active:scale-95 text-white font-extrabold rounded-xl shadow text-xs flex items-center gap-1.5">
+              <span>📷</span>
+              <span>カメラ読取</span>
+            </button>
+            <button type="button" onclick="addDeliveryItem('', '')" class="py-2 px-3 bg-brand-700 hover:bg-brand-800 active:scale-95 text-white font-extrabold rounded-xl shadow text-xs flex items-center gap-1.5">
+              <span>＋</span>
+              <span>手動追加</span>
             </button>
           </div>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">案件・元請け区分</label>
-            <select id="clientType" class="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold bg-white" onchange="updateField('clientType', this.value)">
-              <option value="宅配委託（大手）">宅配委託（大手キャリア）</option>
-              <option value="Amazon Flex / 委託">Amazon Flex / デリバリー</option>
-              <option value="企業配・ルート配送">企業配・ルート配送</option>
-              <option value="スポット・チャーター">スポット・チャーター便</option>
-              <option value="フード・クイックコマース">フード・即時配達</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">担当コース・便名</label>
-            <input type="text" id="courseName" placeholder="例: 1便目 / 相模原中央" class="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold" oninput="updateField('courseName', this.value)">
-          </div>
-        </div>
-
-        <!-- 4ステータス集計表示 -->
-        <div class="grid grid-cols-4 gap-2 text-center">
-          <div class="bg-slate-100 border border-slate-200 rounded-xl p-2.5">
-            <p class="text-[11px] font-bold text-slate-500">登録/持出</p>
-            <p id="stat-total" class="text-xl font-black text-slate-900">0</p>
-          </div>
-          <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5">
-            <p class="text-[11px] font-bold text-emerald-700">✅ 配達完了</p>
-            <p id="stat-completed" class="text-xl font-black text-emerald-700">0</p>
-          </div>
-          <div class="bg-amber-50 border border-amber-200 rounded-xl p-2.5">
-            <p class="text-[11px] font-bold text-amber-700">🔄 不在持戻</p>
-            <p id="stat-absent" class="text-xl font-black text-amber-700">0</p>
-          </div>
-          <div class="bg-blue-50 border border-blue-200 rounded-xl p-2.5">
-            <p class="text-[11px] font-bold text-blue-700">⏳ 未配達</p>
-            <p id="stat-pending" class="text-xl font-black text-blue-700">0</p>
-          </div>
-        </div>
-      </section>
-
-      <!-- メイン機能：配達先 ＆ 配達完了時間リスト（カメラ読取対応） -->
-      <section class="bg-white rounded-xl shadow-sm border-2 border-blue-500/30 p-4 space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-          <div>
-            <h2 class="font-extrabold text-base text-slate-900 flex items-center gap-1.5">📍 配達先 ＆ 配達完了時間</h2>
-            <p class="text-xs text-slate-500">カメラ読取または手入力で登録し、「✅ 完了打刻」「🔄 不在」で時間帯データを蓄積</p>
-          </div>
-          <div class="flex flex-wrap gap-2 no-print">
-            <button onclick="openCameraModal('ocr')" class="bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-extrabold px-3.5 py-2.5 rounded-xl shadow btn-press flex items-center gap-1.5">
-              <span>📷</span> カメラ読取
-            </button>
-            <button onclick="addDeliveryItem()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-extrabold px-3.5 py-2.5 rounded-xl shadow btn-press flex items-center gap-1">
-              <span>＋</span> 手動追加
-            </button>
-          </div>
-        </div>
-
-        <!-- クイック追加バー -->
-        <div id="quick-add-dest-bar" class="bg-slate-50 border border-slate-200 rounded-xl p-2.5 space-y-1.5 no-print">
-          <p class="text-[11px] font-bold text-slate-500">⚡ ワンタップで新規配達先を追加：</p>
-          <div id="quick-dest-chips" class="flex flex-wrap gap-1.5"></div>
-        </div>
+        <!-- クイックエリア追加チップ -->
+        <div id="quickAddChips" class="flex flex-wrap items-center gap-1.5 text-xs"></div>
 
         <!-- 配達先カード一覧 -->
-        <div id="deliveries-container" class="space-y-3"></div>
+        <div id="deliveryListContainer" class="space-y-2.5"></div>
       </section>
-
     </div>
 
-    <!-- ==================== TAB 2: 在宅率・配達先別分析 ==================== -->
-    <div id="view-analytics" class="hidden space-y-4">
-
-      <!-- ① 配達先ごとの個別ピンポイント分析 -->
-      <section class="bg-white rounded-xl shadow-sm border-2 border-indigo-500/40 p-4 space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+    <!-- TAB 2: 地図ピン一覧俯瞰マップ（Leaflet + OpenStreetMap + Googleマップ連携） -->
+    <div id="content-map" class="hidden space-y-3.5">
+      <section class="bg-white rounded-xl p-3.5 shadow-sm border border-slate-200 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
           <div>
-            <h2 class="font-extrabold text-base text-slate-900 flex items-center gap-1.5">🔍 配達先ごとの個別在宅分析</h2>
-            <p class="text-xs text-slate-500">特定のマンション・企業・個人宅を選択し、「何時台なら在宅しているか」を個別診断します</p>
+            <h2 class="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+              <span>🗺️</span>
+              <span>配達先 地図ピン一覧マップ</span>
+            </h2>
+            <p class="text-[11px] text-slate-500">読み取った住所を自動で地図にピン立て（青:未配達 / 緑:完了 / 赤:不在）</p>
           </div>
+          <button type="button" onclick="geocodeAndPlotAll(true)" id="btnGeocodeAll" class="py-2 px-3 bg-sky-600 hover:bg-sky-700 active:scale-95 text-white font-extrabold rounded-xl shadow text-xs flex items-center gap-1.5">
+            <span>📍</span>
+            <span>住所を地図にピン立て更新</span>
+          </button>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-          <div class="sm:col-span-5">
-            <label class="block text-[11px] font-bold text-slate-500 mb-1">配達先をキーワード絞り込み</label>
-            <input type="text" id="dest-filter-input" placeholder="例: マンション / 302 / 田中" oninput="updateDestinationSelector()" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+        <!-- 凡例＆ステータスバー -->
+        <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200 text-xs">
+          <div class="flex items-center gap-3 font-bold">
+            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-sky-600 inline-block"></span>未配達</span>
+            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-emerald-600 inline-block"></span>完了</span>
+            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-rose-600 inline-block"></span>不在</span>
           </div>
-          <div class="sm:col-span-7">
-            <label class="block text-[11px] font-bold text-slate-500 mb-1">分析する配達先を選択</label>
-            <select id="dest-analytics-select" onchange="renderSingleDestinationAnalytics()" class="w-full border border-indigo-300 bg-indigo-50/40 rounded-lg px-3 py-2 font-extrabold text-sm text-slate-900">
-              <option value="">-- 配達先を選択してください --</option>
-            </select>
-          </div>
+          <span id="mapStatusText" class="text-[11px] font-bold text-slate-600">待機中</span>
         </div>
 
-        <div id="single-dest-detail-box" class="space-y-3"></div>
-      </section>
+        <!-- 地図描画エリア -->
+        <div id="deliveryMapCanvas" class="w-full h-80 sm:h-96 rounded-xl border-2 border-slate-300 z-10 overflow-hidden bg-slate-100"></div>
 
-      <!-- ② 配達先・建物別の在宅率ランキング一覧 -->
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-3">
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-          <h3 class="font-extrabold text-sm sm:text-base text-slate-800">🏢 配達先・建物別の在宅率一覧（タップで詳細分析）</h3>
-          <span class="text-[11px] text-slate-500">全期間の訪問データ集計</span>
-        </div>
-        <div id="dest-analytics-container" class="space-y-2 text-xs"></div>
-      </section>
-
-      <!-- ③ 全体：時間帯別 在宅率分析 -->
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-          <div>
-            <h2 class="font-extrabold text-base text-slate-900">📊 エリア全体：時間帯別 在宅率分析</h2>
-            <p class="text-xs text-slate-500">すべての配達先の打刻時刻を合算し、全体のゴールデンタイムを算出します</p>
-          </div>
-          <div class="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
-            <button id="scope-all-btn" onclick="setAnalyticsScope('all')" class="px-3 py-1.5 rounded-lg text-xs font-extrabold bg-indigo-600 text-white shadow-xs transition">
-              全期間（累計）
-            </button>
-            <button id="scope-day-btn" onclick="setAnalyticsScope('day')" class="px-3 py-1.5 rounded-lg text-xs font-extrabold text-slate-600 transition">
-              選択日のみ
-            </button>
-          </div>
-        </div>
-
-        <div id="analytics-insight-cards" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div>
-
-        <div class="space-y-2.5 pt-1">
-          <div class="flex items-center justify-between text-xs font-bold text-slate-500">
-            <span>時間帯区分（完了 / 不在 / 在宅率）</span>
-            <span>在宅率メーター</span>
-          </div>
-          <div id="hourly-chart-container" class="space-y-2.5"></div>
+        <!-- ピン立て対象リスト（ワンタップでGoogleマップ開く＆完了打刻） -->
+        <div class="space-y-2 pt-1">
+          <h3 class="text-xs font-extrabold text-slate-700">📌 登録済み配達先クイックナビ一覧</h3>
+          <div id="mapItemQuickList" class="space-y-2"></div>
         </div>
       </section>
-
-      <!-- ④ 選択日の不在持戻・再配達ターゲットリスト -->
-      <section class="bg-white rounded-xl shadow-sm border border-amber-200 p-4 space-y-3">
-        <div class="flex items-center justify-between border-b border-amber-100 pb-2">
-          <h3 class="font-extrabold text-sm sm:text-base text-amber-900">🔄 選択日の「不在持戻」再配達フォローリスト</h3>
-          <span id="absent-followup-count" class="bg-amber-100 text-amber-800 text-xs font-extrabold px-2.5 py-0.5 rounded-full">0件</span>
-        </div>
-        <div id="absent-followup-container" class="space-y-2 text-xs"></div>
-      </section>
-
     </div>
 
-    <!-- ==================== TAB 3: 点呼・点検 ==================== -->
-    <div id="view-check" class="hidden space-y-4">
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-3">
+    <!-- TAB 3: 在宅率・配達先別分析 -->
+    <div id="content-analytics" class="hidden space-y-3.5">
+      <!-- 配達先ごとの個別分析 -->
+      <section class="bg-white rounded-xl p-3.5 shadow-sm border border-slate-200 space-y-3">
+        <div class="border-b border-slate-100 pb-2">
+          <h2 class="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+            <span>🏢</span>
+            <span>配達先ごとの個別在宅分析</span>
+          </h2>
+          <p class="text-[11px] text-slate-500">特定のマンション・個人宅・企業を選択し、何時台なら在宅率が高いか分析します。</p>
+        </div>
+
+        <div class="space-y-2">
+          <select id="targetDestSelect" onchange="renderSingleDestAnalysis()" class="w-full p-2.5 border-2 border-slate-200 rounded-xl text-xs sm:text-sm font-bold bg-slate-50">
+            <option value="">-- 分析する配達先を選択してください --</option>
+          </select>
+          <div id="singleDestResultBox" class="bg-slate-50 rounded-xl p-3 border border-slate-200 text-xs text-slate-600">
+            配達先を選択すると、狙い目時間帯と過去の訪問履歴が表示されます。
+          </div>
+        </div>
+      </section>
+
+      <!-- 全体・時間帯別在宅率ヒートグラフ -->
+      <section class="bg-white rounded-xl p-3.5 shadow-sm border border-slate-200 space-y-3">
         <div class="flex items-center justify-between border-b border-slate-100 pb-2">
-          <h2 class="font-extrabold text-base text-slate-800">🌅 乗務前点呼・日常点検（6項目）</h2>
-          <button onclick="passAllInspection()" class="bg-emerald-600 text-white text-xs font-extrabold px-3 py-1.5 rounded-lg btn-press">✨ 全項目 良好セット</button>
-        </div>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務前_点呼執行者</label>
-            <input type="text" id="preExecutor" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="updateField('preExecutor', this.value)">
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務前_点呼方法</label>
-            <select id="preMethod" class="w-full border border-slate-300 rounded-lg px-3 py-2 bg-white" onchange="updateField('preMethod', this.value)">
-              <option value="対面">対面</option>
-              <option value="電話・IT点呼">電話・IT点呼</option>
-              <option value="自主確認">自主確認（個人事業主）</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務前_アルコール数値 (mg/L)</label>
-            <input type="number" step="0.01" id="preAlcohol" value="0.00" class="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold" oninput="updateField('preAlcohol', this.value)">
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務前_日常点検</label>
-            <select id="preInspection" class="w-full border border-slate-300 rounded-lg px-3 py-2 bg-white font-bold" onchange="updateField('preInspection', this.value)">
-              <option value="良好（異常なし）">良好（異常なし）</option>
-              <option value="要補充・調整済">要補充・調整済</option>
-              <option value="異常あり（整備要）">異常あり（整備要）</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務前_健康・睡眠状態</label>
-            <select id="preHealth" class="w-full border border-slate-300 rounded-lg px-3 py-2 bg-white" onchange="updateField('preHealth', this.value)">
-              <option value="良好（睡眠十分）">良好（睡眠十分）</option>
-              <option value="やや疲労あり（注意運行）">やや疲労あり（注意運行）</option>
-              <option value="体調不良（乗務不可）">体調不良（乗務不可）</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務前_指示事項</label>
-            <input type="text" id="preInstruction" placeholder="下のチップでワンタップ入力" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="updateField('preInstruction', this.value)">
-            <div class="flex flex-wrap gap-1.5 mt-2">
-              <button type="button" onclick="appendInstruction('法令遵守')" class="bg-blue-600 text-white text-xs font-bold px-2.5 py-1 rounded-md btn-press">法令遵守</button>
-              <button type="button" onclick="appendInstruction('安全第一')" class="bg-slate-200 text-slate-800 text-xs font-bold px-2.5 py-1 rounded-md btn-press">安全第一</button>
-              <button type="button" onclick="appendInstruction('雨天スリップ注意')" class="bg-slate-200 text-slate-800 text-xs font-bold px-2.5 py-1 rounded-md btn-press">雨天スリップ注意</button>
-              <button type="button" onclick="appendInstruction('車間距離確保')" class="bg-slate-200 text-slate-800 text-xs font-bold px-2.5 py-1 rounded-md btn-press">車間距離確保</button>
-            </div>
+          <h2 class="text-sm font-extrabold text-slate-900">📊 時間帯別 在宅率（配達完了率）分析</h2>
+          <div class="flex gap-1 bg-slate-100 p-1 rounded-lg text-[11px] font-bold">
+            <button type="button" onclick="setAnalyticsScope('all')" id="scope-all" class="px-2.5 py-1 rounded bg-brand-800 text-white">全期間累計</button>
+            <button type="button" onclick="setAnalyticsScope('day')" id="scope-day" class="px-2.5 py-1 rounded text-slate-600">選択日のみ</button>
           </div>
         </div>
-      </section>
-
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-3">
-        <h2 class="font-extrabold text-base text-slate-800 border-b border-slate-100 pb-2">🌆 乗務後点呼・車両確認（4項目）</h2>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務後_点呼執行者</label>
-            <input type="text" id="postExecutor" class="w-full border border-slate-300 rounded-lg px-3 py-2" oninput="updateField('postExecutor', this.value)">
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務後_点呼方法</label>
-            <select id="postMethod" class="w-full border border-slate-300 rounded-lg px-3 py-2 bg-white" onchange="updateField('postMethod', this.value)">
-              <option value="対面">対面</option>
-              <option value="電話・IT点呼">電話・IT点呼</option>
-              <option value="自主確認">自主確認（個人事業主）</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務後_アルコール数値 (mg/L)</label>
-            <input type="number" step="0.01" id="postAlcohol" value="0.00" class="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold" oninput="updateField('postAlcohol', this.value)">
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">乗務後_車両状況</label>
-            <select id="postVehicle" class="w-full border border-slate-300 rounded-lg px-3 py-2 bg-white font-bold" onchange="updateField('postVehicle', this.value)">
-              <option value="異常なし・無事故無違反">異常なし・無事故無違反</option>
-              <option value="灯火類・タイヤ要点検">灯火類・タイヤ要点検</option>
-              <option value="遅延・荷主報告あり">遅延・荷主報告あり</option>
-            </select>
-          </div>
-        </div>
+        <div id="timeSlotChartContainer" class="space-y-2.5"></div>
       </section>
     </div>
 
-    <!-- ==================== TAB 4: 売上・経費 ==================== -->
-    <div id="view-finance" class="hidden space-y-4">
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-4">
-        <h2 class="font-extrabold text-base text-slate-800 border-b border-slate-100 pb-2">💴 本日の売上・経費・粗利計算</h2>
-
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">報酬体系</label>
-            <select id="revType" class="w-full border border-slate-300 rounded-lg px-3 py-2 bg-white font-bold" onchange="updateField('revType', this.value)">
-              <option value="fixed">日当・チャーター固定</option>
-              <option value="piece">個建て（完了件数 × 単価）</option>
-            </select>
-          </div>
-          <div id="box-fixed-rev">
-            <label class="block text-xs font-bold text-slate-500 mb-1">日当・売上金額 (円)</label>
-            <input type="number" id="fixedRevenue" placeholder="例: 18000" class="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold text-right" oninput="updateField('fixedRevenue', this.value)">
-          </div>
-          <div id="box-piece-rate" class="hidden">
-            <label class="block text-xs font-bold text-slate-500 mb-1">1件あたり単価 (円)</label>
-            <input type="number" id="pieceRate" placeholder="例: 170" class="w-full border border-slate-300 rounded-lg px-3 py-2 font-bold text-right" oninput="updateField('pieceRate', this.value)">
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">ガソリン代 (円)</label>
-            <input type="number" id="expGas" placeholder="0" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-right" oninput="updateField('expGas', this.value)">
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">高速・有料道路代 (円)</label>
-            <input type="number" id="expToll" placeholder="0" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-right" oninput="updateField('expToll', this.value)">
-          </div>
-          <div>
-            <label class="block text-xs font-bold text-slate-500 mb-1">駐車場・その他経費 (円)</label>
-            <input type="number" id="expOther" placeholder="0" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-right" oninput="updateField('expOther', this.value)">
-          </div>
-        </div>
-
-        <div class="bg-slate-900 text-white rounded-xl p-4 grid grid-cols-3 gap-2 text-center">
-          <div>
-            <p class="text-[11px] text-slate-400">総売上</p>
-            <p class="text-base sm:text-xl font-extrabold text-blue-400">¥<span id="disp-total-rev">0</span></p>
-          </div>
-          <div>
-            <p class="text-[11px] text-slate-400">経費合計</p>
-            <p class="text-base sm:text-xl font-extrabold text-rose-400">¥<span id="disp-total-exp">0</span></p>
-          </div>
-          <div>
-            <p class="text-[11px] text-slate-400">本日粗利益</p>
-            <p class="text-base sm:text-xl font-extrabold text-emerald-400">¥<span id="disp-net-profit">0</span></p>
-          </div>
-        </div>
-      </section>
-
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-2">
-        <h3 class="font-extrabold text-sm text-slate-700">📅 今月の累計パフォーマンス</h3>
-        <div id="monthly-summary-box" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs bg-slate-50 p-3 rounded-lg border border-slate-200"></div>
-      </section>
-    </div>
-
-    <!-- ==================== TAB 5: 日報・送信 ==================== -->
-    <div id="view-report" class="hidden space-y-4">
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-3 no-print">
+    <!-- TAB 4: 日報・スプレッドシート送信・A4印刷 -->
+    <div id="content-report" class="hidden space-y-3.5">
+      <section class="bg-white rounded-xl p-3.5 shadow-sm border border-slate-200 space-y-3 no-print">
         <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-          <h2 class="font-extrabold text-base text-slate-800">💬 LINE報告用 配達完了日報テキスト</h2>
-          <div class="flex flex-wrap gap-1">
-            <button onclick="setReportTemplate('standard', this)" class="tpl-btn bg-blue-600 text-white text-xs font-bold px-2.5 py-1 rounded">標準・法定</button>
-            <button onclick="setReportTemplate('amazon', this)" class="tpl-btn bg-slate-200 text-slate-700 text-xs font-bold px-2.5 py-1 rounded">Amazon用</button>
-            <button onclick="setReportTemplate('yamato', this)" class="tpl-btn bg-slate-200 text-slate-700 text-xs font-bold px-2.5 py-1 rounded">ヤマト用</button>
-            <button onclick="setReportTemplate('sagawa', this)" class="tpl-btn bg-slate-200 text-slate-700 text-xs font-bold px-2.5 py-1 rounded">佐川用</button>
+          <h2 class="text-sm font-extrabold text-slate-900">💬 LINE日報 ＆ クラウド・CSV出力</h2>
+          <div class="flex flex-wrap gap-1.5">
+            <button type="button" onclick="sendToGoogleSheet()" id="btnSendSheet" class="py-2 px-3 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg text-xs shadow flex items-center gap-1">
+              <span>📊</span>
+              <span>シート送信</span>
+            </button>
+            <button type="button" onclick="window.print()" class="py-2 px-3 bg-brand-800 hover:bg-brand-900 text-white font-bold rounded-lg text-xs shadow flex items-center gap-1">
+              <span>🖨️</span>
+              <span>A4印刷</span>
+            </button>
+            <button type="button" onclick="exportCsv()" class="py-2 px-3 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-lg text-xs shadow flex items-center gap-1">
+              <span>📥</span>
+              <span>CSV</span>
+            </button>
           </div>
         </div>
 
-        <textarea id="line-report-text" rows="13" class="w-full border border-slate-300 rounded-xl p-3 text-xs sm:text-sm font-mono bg-slate-50 leading-relaxed"></textarea>
+        <textarea id="lineReportBox" rows="7" class="w-full p-2.5 border border-slate-200 rounded-xl text-xs font-mono bg-slate-50 leading-relaxed"></textarea>
 
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <button onclick="copyLineReport()" class="h-12 bg-slate-800 hover:bg-slate-900 text-white font-extrabold rounded-xl btn-press text-sm flex items-center justify-center gap-1.5">
-            <span>📋</span> 文面をコピー
-          </button>
-          <button onclick="sendToLine()" class="h-12 bg-[#06C755] hover:bg-[#05b34c] text-white font-extrabold rounded-xl btn-press text-sm flex items-center justify-center gap-1.5">
-            <span>💬</span> LINEアプリで送信
-          </button>
-          <button onclick="sendToSpreadsheet()" class="h-12 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-xl btn-press text-sm flex items-center justify-center gap-1.5">
-            <span>📊</span> スプレッドシート送信
-          </button>
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" onclick="copyReportText()" class="py-2.5 bg-slate-800 text-white font-bold rounded-xl text-xs shadow">📋 文面をコピー</button>
+          <button type="button" onclick="sendLineDirect()" class="py-2.5 bg-[#06C755] text-white font-bold rounded-xl text-xs shadow">💬 LINEで送信</button>
         </div>
       </section>
 
-      <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-4 space-y-3 print-box">
-        <div class="flex items-center justify-between border-b border-slate-100 pb-2">
-          <h2 class="font-extrabold text-base text-slate-800">🖨️ 配達完了記録 プレビュー・出力</h2>
-          <div class="flex gap-2 no-print">
-            <button onclick="exportCsv()" class="bg-emerald-600 text-white text-xs font-bold px-3 py-2 rounded-lg btn-press">📥 CSV保存</button>
-            <button onclick="window.print()" class="bg-slate-700 text-white text-xs font-bold px-3 py-2 rounded-lg btn-press">🖨️ A4印刷 / PDF</button>
+      <!-- A4印刷用配達記録表 -->
+      <section id="printable-delivery-area" class="bg-white p-4 rounded-xl border border-slate-300 shadow-sm text-xs space-y-3">
+        <div class="border-b-2 border-slate-900 pb-2 flex justify-between items-end">
+          <div>
+            <h2 class="text-base font-black text-slate-900">配達完了・動態記録表</h2>
+            <p id="prSubHeader" class="text-[11px] text-slate-600">日付: ---- | ドライバー: 未設定</p>
           </div>
+          <div id="prStatsSummary" class="text-right font-bold text-xs">総件数: 0件 / 完了: 0件</div>
         </div>
-        <div id="print-preview-area" class="text-xs space-y-2"></div>
+        <table class="w-full border-collapse border border-slate-300 text-[11px]">
+          <thead>
+            <tr class="bg-slate-100">
+              <th class="border border-slate-300 p-1.5 w-8">#</th>
+              <th class="border border-slate-300 p-1.5 text-left">配達先・住所</th>
+              <th class="border border-slate-300 p-1.5 w-20">状況</th>
+              <th class="border border-slate-300 p-1.5 w-16">記録時刻</th>
+              <th class="border border-slate-300 p-1.5 text-left">メモ</th>
+            </tr>
+          </thead>
+          <tbody id="prTableBody"></tbody>
+        </table>
       </section>
     </div>
 
   </main>
 
-  <!-- ページ先頭へ戻るフローティングボタン -->
-  <button id="fab-top" onclick="window.scrollTo({top: 0, behavior: 'smooth'})" class="fixed bottom-5 right-5 z-40 bg-slate-900/90 backdrop-blur text-white rounded-full shadow-xl border border-slate-700 flex flex-col items-center justify-center opacity-0 pointer-events-none transition-all duration-300 btn-press no-print" style="width: 52px; height: 52px;">
-    <span class="text-base leading-none">⬆️</span>
-    <span class="text-[9px] font-bold mt-0.5">TOP</span>
+  <!-- カメラ読取モーダル（日本語OCR ＋ バーコード/QR 3ルート対応） -->
+  <div id="cameraModal" class="fixed inset-0 bg-slate-950/80 z-50 hidden flex items-center justify-center p-3 backdrop-blur-sm">
+    <div class="bg-white rounded-2xl max-w-md w-full max-h-[92dvh] overflow-y-auto shadow-2xl border border-slate-200 p-4 space-y-3">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2">
+        <h3 class="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+          <span>📷</span>
+          <span>伝票カメラ読取（住所OCR / バーコード）</span>
+        </h3>
+        <button type="button" onclick="closeCameraModal()" class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-bold">✕ 閉じる</button>
+      </div>
+
+      <!-- モード切替 -->
+      <div class="grid grid-cols-2 gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-extrabold">
+        <button type="button" onclick="switchCamMode('ocr')" id="camTab-ocr" class="py-2 rounded-lg bg-brand-800 text-white">📝 住所・宛名OCR</button>
+        <button type="button" onclick="switchCamMode('barcode')" id="camTab-barcode" class="py-2 rounded-lg text-slate-600">▌▌▌ バーコード/QR</button>
+      </div>
+
+      <!-- 環境診断メッセージ -->
+      <div id="camEnvNotice" class="bg-amber-50 border border-amber-200 rounded-xl p-2.5 text-[11px] text-amber-950 leading-relaxed">
+        ※ライブカメラが制限される環境では、下の<strong>「📸 スマホカメラ起動 / 画像選択」</strong>から確実に伝票を読み取れます。
+      </div>
+
+      <!-- ライブカメラプレビュー枠 -->
+      <div class="relative bg-slate-900 rounded-xl overflow-hidden aspect-video flex items-center justify-center">
+        <video id="liveVideo" autoplay playsinline muted class="w-full h-full object-cover"></video>
+        <div id="qrReaderDiv" class="hidden w-full h-full"></div>
+        <div id="camPlaceholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-300 text-xs p-4 text-center">
+          <span class="text-2xl mb-1">📷</span>
+          <span id="camPlaceholderText">カメラ起動待機中...</span>
+        </div>
+      </div>
+
+      <!-- OCRモード操作パネル -->
+      <div id="ocrControlPanel" class="space-y-2.5">
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" onclick="captureAndRunOcr()" class="py-2.5 px-3 bg-brand-700 hover:bg-brand-800 text-white font-extrabold rounded-xl text-xs shadow">
+            📸 ライブ画面から読取
+          </button>
+          <label class="py-2.5 px-3 bg-emerald-700 hover:bg-emerald-800 text-white font-extrabold rounded-xl text-xs shadow text-center cursor-pointer flex items-center justify-center gap-1">
+            <span>📁 カメラ撮影 / 画像選択</span>
+            <input type="file" accept="image/*" capture="environment" onchange="handleImageFileOcr(this)" class="hidden">
+          </label>
+        </div>
+
+        <div id="ocrProgressBox" class="hidden text-xs font-bold text-sky-800 bg-sky-50 p-2.5 rounded-xl border border-sky-200 text-center">
+          ⏳ 日本語AI文字認識を実行中...（数秒お待ちください）
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-bold text-slate-700 mb-1">読み取った住所・宛先（不要行を消して編集可能）</label>
+          <textarea id="ocrResultText" rows="3" placeholder="ここに読み取った住所・名前が表示されます" class="w-full p-2.5 border-2 border-slate-200 rounded-xl text-xs bg-slate-50 focus:bg-white"></textarea>
+        </div>
+
+        <button type="button" onclick="confirmOcrToList()" class="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-xl text-xs sm:text-sm shadow-md">
+          ＋ この住所を配達先リストに追加（地図ピン対応）
+        </button>
+      </div>
+
+      <!-- バーコードモード操作パネル -->
+      <div id="barcodeControlPanel" class="hidden space-y-2.5">
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" onclick="startBarcodeLive()" class="py-2.5 px-3 bg-brand-700 text-white font-extrabold rounded-xl text-xs shadow">
+            🔄 ライブ連続スキャン開始
+          </button>
+          <label class="py-2.5 px-3 bg-emerald-700 text-white font-extrabold rounded-xl text-xs shadow text-center cursor-pointer flex items-center justify-center gap-1">
+            <span>📸 カメラ撮影 / 画像読取</span>
+            <input type="file" accept="image/*" capture="environment" onchange="handleBarcodeFileScan(this)" class="hidden">
+          </label>
+        </div>
+        <div id="qrFileTempReader" class="hidden"></div>
+        <p class="text-[11px] text-slate-500 text-center">バーコード・QRを読み取ると自動的に配達先リストへ追加されます。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 先頭へ戻るボタン -->
+  <button id="btnScrollTop" type="button" onclick="scrollToTop()" style="bottom: calc(1.25rem + env(safe-area-inset-bottom)); z-index: 9999;" class="fixed right-4 py-3 px-4 bg-brand-900/95 text-white rounded-full shadow-2xl border-2 border-white/30 transition-all duration-200 opacity-0 pointer-events-none active:scale-95 flex items-center gap-1.5 text-xs font-extrabold no-print">
+    <span>⬆️</span>
+    <span>先頭</span>
   </button>
 
   <script>
-    const STORAGE_KEY_RECORDS = 'delivery_app_records_v2';
-    const STORAGE_KEY_PROFILE = 'delivery_app_profile_v2';
-    const STORAGE_KEY_DESTS   = 'delivery_app_dest_chips_v2';
+    const DELIVERY_STORAGE_KEY = 'r130_delivery_records_v3';
+    const DELIVERY_SETTINGS_KEY = 'r130_delivery_settings_v3';
+    const GEO_CACHE_KEY = 'r130_geocode_cache_v1';
 
-    let currentTab = 'ops';
-    let currentTemplate = 'standard';
+    let selectedDate = getTodayStr();
     let analyticsScope = 'all';
-
-    // カメラ・スキャン状態管理
-    let currentScanMode = 'ocr';
-    let ocrStream = null;
+    let leafletMap = null;
+    let leafletMarkers = [];
+    let activeStream = null;
     let html5QrScanner = null;
-    let lastScannedBarcode = '';
-    let lastScannedTime = 0;
-    let sessionScannedItems = [];
-
-    const defaultDestChips = ['〇〇マンション', '△△ビル受付', '中央1丁目エリア', '駅前商店街', '宅配ボックス指定'];
 
     function getTodayStr() {
       const d = new Date();
@@ -649,1457 +429,971 @@
       return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     }
 
-    function escapeHtml(str) {
-      return String(str ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    function loadProfile() {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_PROFILE) || '{}');
+    function getSettings() {
+      try {
+        const s = JSON.parse(localStorage.getItem(DELIVERY_SETTINGS_KEY));
+        if (s && typeof s === 'object') {
+          return {
+            driver: s.driver || '',
+            vehicle: s.vehicle || '',
+            course: s.course || '',
+            gasUrl: s.gasUrl || '',
+            presets: Array.isArray(s.presets) ? s.presets : ['相模原市中央区中央1-1', '相模原市緑区橋本3-28', '相模原市南区相模大野3-8']
+          };
+        }
+      } catch (e) {}
       return {
-        driver: saved.driver || '',
-        company: saved.company || '',
-        office: saved.office || '',
-        vehicle: saved.vehicle || '',
-        course: saved.course || '',
-        executor: saved.executor || '自主確認',
-        gasUrl: saved.gasUrl || ''
+        driver: '',
+        vehicle: '',
+        course: '',
+        gasUrl: '',
+        presets: ['相模原市中央区中央1-1', '相模原市緑区橋本3-28', '相模原市南区相模大野3-8']
       };
     }
 
-    function saveProfile() {
-      const p = {
-        driver: document.getElementById('prof-driver').value,
-        company: document.getElementById('prof-company').value,
-        office: document.getElementById('prof-office').value,
-        vehicle: document.getElementById('prof-vehicle').value,
-        course: document.getElementById('prof-course').value,
-        executor: document.getElementById('prof-executor').value,
-        gasUrl: document.getElementById('prof-gas-url').value.trim()
+    function saveSettings() {
+      const cur = getSettings();
+      const s = {
+        driver: (document.getElementById('cfgDriver').value || '').trim(),
+        vehicle: (document.getElementById('cfgVehicle').value || '').trim(),
+        course: (document.getElementById('cfgCourse').value || '').trim(),
+        gasUrl: (document.getElementById('cfgGasUrl').value || '').trim(),
+        presets: cur.presets
       };
-      localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(p));
-      updateHeaderInfo();
-      if (currentTab === 'report') renderReport();
+      localStorage.setItem(DELIVERY_SETTINGS_KEY, JSON.stringify(s));
+      updateHeader();
+      refreshReportPreview();
     }
 
-    function loadDestChips() {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY_DESTS) || 'null');
-      return saved || defaultDestChips;
+    function loadSettingsUI() {
+      const s = getSettings();
+      document.getElementById('cfgDriver').value = s.driver;
+      document.getElementById('cfgVehicle').value = s.vehicle;
+      document.getElementById('cfgCourse').value = s.course;
+      document.getElementById('cfgGasUrl').value = s.gasUrl;
+      renderPresets();
+      updateHeader();
     }
 
-    function saveDestChips(chips) {
-      localStorage.setItem(STORAGE_KEY_DESTS, JSON.stringify(chips));
-      renderDestChips();
+    function updateHeader() {
+      const s = getSettings();
+      document.getElementById('headerDriverLabel').textContent = `ドライバー: ${s.driver || '未設定'} | コース: ${s.course || '通常便'}`;
     }
 
-    function getAllRecords() {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY_RECORDS) || '{}');
-    }
-
-    function getRecord(dateStr) {
-      const all = getAllRecords();
-      const prof = loadProfile();
-      if (!all[dateStr]) {
-        all[dateStr] = {
-          date: dateStr,
-          clientType: '宅配委託（大手）',
-          courseName: prof.course || '',
-          deliveries: [],
-          preExecutor: prof.executor || '自主確認',
-          preMethod: '対面',
-          preAlcohol: '0.00',
-          preInspection: '良好（異常なし）',
-          preHealth: '良好（睡眠十分）',
-          preInstruction: '法令遵守、安全第一',
-          postExecutor: prof.executor || '自主確認',
-          postMethod: '対面',
-          postAlcohol: '0.00',
-          postVehicle: '異常なし・無事故無違反',
-          revType: 'fixed',
-          fixedRevenue: '',
-          pieceRate: '',
-          expGas: '',
-          expToll: '',
-          expOther: ''
-        };
-        localStorage.setItem(STORAGE_KEY_RECORDS, JSON.stringify(all));
-      }
-      if (!Array.isArray(all[dateStr].deliveries)) {
-        all[dateStr].deliveries = [];
-      }
-      return all[dateStr];
-    }
-
-    function saveRecord(dateStr, rec) {
-      const all = getAllRecords();
-      all[dateStr] = rec;
-      localStorage.setItem(STORAGE_KEY_RECORDS, JSON.stringify(all));
-      recalculateAll();
-    }
-
-    function showToast(msg, icon = '✅') {
-      const t = document.getElementById('toast');
-      document.getElementById('toast-msg').textContent = msg;
-      document.getElementById('toast-icon').textContent = icon;
-      t.classList.remove('opacity-0');
-      t.classList.add('opacity-100');
-      clearTimeout(window._toastTimer);
-      window._toastTimer = setTimeout(() => {
-        t.classList.remove('opacity-100');
-        t.classList.add('opacity-0');
-      }, 2600);
-    }
-
-    function switchTab(tab) {
-      currentTab = tab;
-      ['ops', 'analytics', 'check', 'finance', 'report'].forEach(t => {
-        document.getElementById(`view-${t}`).classList.toggle('hidden', t !== tab);
-        const btn = document.getElementById(`tab-${t}`);
-        if (t === tab) {
-          btn.classList.add('border-blue-500', 'text-white', 'bg-slate-700/50');
-          btn.classList.remove('border-transparent', 'text-slate-400');
-        } else {
-          btn.classList.remove('border-blue-500', 'text-white', 'bg-slate-700/50');
-          btn.classList.add('border-transparent', 'text-slate-400');
-        }
-      });
-      if (tab === 'analytics') renderAnalytics();
-      if (tab === 'report') renderReport();
-      if (tab === 'finance') renderMonthlySummary();
-    }
-
-    function updateHeaderInfo() {
-      const p = loadProfile();
-      const driver = p.driver || 'ドライバー未設定';
-      const org = [p.company, p.office].filter(Boolean).join(' ');
-      const veh = p.vehicle || '車両未登録';
-      document.getElementById('header-driver-info').textContent = `${driver}${org ? ` (${org})` : ''} | 車両: ${veh}`;
-    }
-
-    function updateField(key, value) {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      rec[key] = value;
-      saveRecord(dateStr, rec);
-    }
-
-    // ==========================================
-    // カメラ伝票読取（環境診断 ＋ OCR ＋ バーコード両対応）
-    // ==========================================
-    function checkCameraEnvironment() {
-      const noticeBox = document.getElementById('camera-env-notice');
-      const reasonEl = document.getElementById('camera-env-reason');
-      const isIframe = (window.self !== window.top);
-      const isSecure = window.isSecureContext || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-
-      if (isIframe) {
-        noticeBox.classList.remove('hidden');
-        reasonEl.textContent = 'チャット画面内のプレビュー枠（iframe）で開いているため、ブラウザのセキュリティ仕様によりライブカメラがブロックされます。';
-        return false;
-      }
-      if (!isSecure) {
-        noticeBox.classList.remove('hidden');
-        reasonEl.textContent = '現在 file:// または http:// で開いているため、ライブカメラが制限されます（Netlify等の https:// URL で開くとライブカメラも動きます）。';
-        return false;
-      }
-      noticeBox.classList.add('hidden');
-      return true;
-    }
-
-    function openCameraModal(mode = 'ocr') {
-      document.getElementById('camera-modal').classList.remove('hidden');
-      sessionScannedItems = [];
-      updateSessionScanList();
-      checkCameraEnvironment();
-      switchScanMode(mode);
-    }
-
-    async function closeCameraModal() {
-      document.getElementById('camera-modal').classList.add('hidden');
-      stopOcrCamera();
-      await stopBarcodeScanner();
-    }
-
-    async function switchScanMode(mode) {
-      currentScanMode = mode;
-      const ocrBtn = document.getElementById('scan-mode-ocr-btn');
-      const bcBtn = document.getElementById('scan-mode-barcode-btn');
-      const panelOcr = document.getElementById('panel-ocr');
-      const panelBc = document.getElementById('panel-barcode');
-
-      if (mode === 'ocr') {
-        ocrBtn.className = 'py-2.5 rounded-xl text-xs sm:text-sm font-extrabold bg-blue-600 text-white shadow-xs transition';
-        bcBtn.className = 'py-2.5 rounded-xl text-xs sm:text-sm font-extrabold bg-white text-slate-700 border border-slate-300 transition';
-        panelOcr.classList.remove('hidden');
-        panelBc.classList.add('hidden');
-        await stopBarcodeScanner();
-        startOcrCamera();
-      } else {
-        bcBtn.className = 'py-2.5 rounded-xl text-xs sm:text-sm font-extrabold bg-blue-600 text-white shadow-xs transition';
-        ocrBtn.className = 'py-2.5 rounded-xl text-xs sm:text-sm font-extrabold bg-white text-slate-700 border border-slate-300 transition';
-        panelBc.classList.remove('hidden');
-        panelOcr.classList.add('hidden');
-        stopOcrCamera();
-        startBarcodeScanner();
-      }
-    }
-
-    async function startOcrCamera() {
-      const video = document.getElementById('ocr-video');
-      const errOverlay = document.getElementById('ocr-camera-fallback-overlay');
-      const errDetail = document.getElementById('ocr-camera-err-detail');
-      errOverlay.classList.add('hidden');
-
-      try {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error('このブラウザ環境ではライブカメラAPI（getUserMedia）が許可されていません。');
-        }
-        ocrStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
-          audio: false
-        });
-        video.srcObject = ocrStream;
-        await video.play().catch(() => {});
-      } catch (e) {
-        errOverlay.classList.remove('hidden');
-        errDetail.textContent = '下の「📸 カメラ起動して撮影」または「🖼️ アルバム・画像選択」ボタンをタップすれば伝票を読み取れます。';
-      }
-    }
-
-    function stopOcrCamera() {
-      if (ocrStream) {
-        ocrStream.getTracks().forEach(track => track.stop());
-        ocrStream = null;
-      }
-      const video = document.getElementById('ocr-video');
-      if (video) video.srcObject = null;
-    }
-
-    function captureAndRunOcr() {
-      const video = document.getElementById('ocr-video');
-      if (!video || !video.videoWidth || !ocrStream) {
-        showToast('ライブカメラ未起動のため、下の「📸 カメラ起動して撮影」を押してください', '📸');
-        return;
-      }
-      const canvas = document.getElementById('ocr-canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      runTesseractOcr(canvas);
-    }
-
-    function handleImageFileOcr(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      showToast('画像を読み込み中...', '🖼️');
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        const img = new Image();
-        img.onload = function() {
-          const canvas = document.getElementById('ocr-canvas');
-          const maxW = 1400;
-          const scale = img.width > maxW ? (maxW / img.width) : 1;
-          canvas.width = img.width * scale;
-          canvas.height = img.height * scale;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          runTesseractOcr(canvas);
-        };
-        img.src = e.target.result;
-      };
-      reader.readAsDataURL(file);
-      event.target.value = '';
-    }
-
-    async function runTesseractOcr(imageSource) {
-      if (typeof Tesseract === 'undefined') {
-        showToast('OCRエンジン読込中です。ネット接続を確認して数秒後にお試しください', '⏳');
-        return;
-      }
-      const progBox = document.getElementById('ocr-progress-box');
-      const statusText = document.getElementById('ocr-status-text');
-      const progPct = document.getElementById('ocr-progress-pct');
-      const progBar = document.getElementById('ocr-progress-bar');
-      const resultBox = document.getElementById('ocr-result-box');
-
-      progBox.classList.remove('hidden');
-      resultBox.classList.add('hidden');
-      statusText.textContent = '⏳ 伝票の文字を読み取り中（初回のみ言語データ読込に数秒かかります）...';
-      progPct.textContent = '10%';
-      progBar.style.width = '10%';
-
-      try {
-        const result = await Tesseract.recognize(imageSource, 'jpn+eng', {
-          logger: m => {
-            if (m.status === 'recognizing text') {
-              const pct = Math.round((m.progress || 0) * 100);
-              statusText.textContent = '🔍 住所・宛名をテキスト変換中...';
-              progPct.textContent = `${pct}%`;
-              progBar.style.width = `${pct}%`;
-            }
-          }
-        });
-
-        progBox.classList.add('hidden');
-        const rawText = (result && result.data && result.data.text) ? result.data.text : '';
-        const formatted = formatExtractedAddress(rawText);
-
-        document.getElementById('ocr-dest-input').value = formatted || '（文字を判別できませんでした。明るい場所で再撮影するか手入力してください）';
-        document.getElementById('ocr-memo-input').value = '';
-        resultBox.classList.remove('hidden');
-        showToast('伝票の文字を読み取りました！', '📝');
-      } catch (err) {
-        progBox.classList.add('hidden');
-        showToast('文字読み取りに失敗しました。明るい場所で再試行してください', '⚠️');
-      }
-    }
-
-    function formatExtractedAddress(raw) {
-      return raw
-        .split('\n')
-        .map(line => line.replace(/\s+/g, ' ').trim())
-        .filter(line => line.length >= 2)
-        .join(' ');
-    }
-
-    function cleanOcrText() {
-      const el = document.getElementById('ocr-dest-input');
-      el.value = el.value.replace(/\s+/g, ' ').trim();
-    }
-
-    function confirmOcrToList() {
-      const dest = document.getElementById('ocr-dest-input').value.trim();
-      const memo = document.getElementById('ocr-memo-input').value.trim();
-      if (!dest) {
-        showToast('配達先を入力してください', '⚠️');
-        return;
-      }
-      addDeliveryItem(dest, memo);
-      document.getElementById('ocr-result-box').classList.add('hidden');
-      closeCameraModal();
-    }
-
-    // ==========================================
-    // バーコード・QRスキャナー（ライブ ＋ 写真ファイル読取両対応）
-    // ==========================================
-    function onBarcodeSuccess(decodedText) {
-      const now = Date.now();
-      if (decodedText === lastScannedBarcode && (now - lastScannedTime) < 2500) {
-        return;
-      }
-      lastScannedBarcode = decodedText;
-      lastScannedTime = now;
-
-      const label = `荷物 [${decodedText}]`;
-      addDeliveryItem(label, `追跡番号: ${decodedText}`, true);
-      sessionScannedItems.unshift(decodedText);
-      updateSessionScanList();
-      if (navigator.vibrate) navigator.vibrate(100);
-      showToast(`バーコード読取完了: ${decodedText}`, '▌▌▌');
-    }
-
-    async function startBarcodeScanner() {
-      const readerEl = document.getElementById('barcode-reader');
-      const fallbackOverlay = document.getElementById('barcode-fallback-overlay');
-      const errDetail = document.getElementById('barcode-err-detail');
-      fallbackOverlay.classList.add('hidden');
-      readerEl.classList.remove('hidden');
-
-      if (typeof Html5Qrcode === 'undefined') {
-        readerEl.classList.add('hidden');
-        fallbackOverlay.classList.remove('hidden');
-        errDetail.textContent = 'スキャナーライブラリ読込中です。下の「📸 カメラでバーコード撮影」をお使いください。';
-        return;
-      }
-
-      try {
-        html5QrScanner = new Html5Qrcode('barcode-reader');
-        await html5QrScanner.start(
-          { facingMode: 'environment' },
-          { fps: 10, qrbox: { width: 250, height: 140 } },
-          (decodedText) => onBarcodeSuccess(decodedText),
-          () => {}
-        );
-      } catch (err) {
-        readerEl.classList.add('hidden');
-        fallbackOverlay.classList.remove('hidden');
-        errDetail.textContent = '下の「📸 カメラでバーコード撮影」または「🖼️ バーコード画像を選択」ボタンから読み取れます。';
-      }
-    }
-
-    async function stopBarcodeScanner() {
-      if (html5QrScanner) {
-        try {
-          if (html5QrScanner.isScanning) {
-            await html5QrScanner.stop();
-          }
-          html5QrScanner.clear();
-        } catch (e) {}
-        html5QrScanner = null;
-      }
-    }
-
-    async function handleBarcodeImageFile(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      event.target.value = '';
-
-      if (typeof Html5Qrcode === 'undefined') {
-        showToast('スキャナー準備中です。数秒後にお試しください', '⏳');
-        return;
-      }
-
-      showToast('バーコード画像を解析中...', '🔍');
-      try {
-        // ライブスキャナーが動いている場合は一時停止して競合防止
-        await stopBarcodeScanner();
-        const fileScanner = new Html5Qrcode('barcode-file-reader');
-        const decodedText = await fileScanner.scanFile(file, true);
-        fileScanner.clear();
-        lastScannedBarcode = ''; // ファイル選択時は同一コードでも即登録許可
-        onBarcodeSuccess(decodedText);
-      } catch (err) {
-        showToast('画像からバーコード/QRを検出できませんでした。ピントを合わせて再撮影してください', '⚠️');
-      } finally {
-        if (currentScanMode === 'barcode') {
-          startBarcodeScanner();
-        }
-      }
-    }
-
-    function updateSessionScanList() {
-      document.getElementById('scanned-session-count').textContent = `${sessionScannedItems.length} 件追加済`;
-      const listEl = document.getElementById('scanned-session-list');
-      if (sessionScannedItems.length === 0) {
-        listEl.innerHTML = `<p class="text-slate-400">バーコードをかざすか、上のボタンで撮影してください...</p>`;
-        return;
-      }
-      listEl.innerHTML = sessionScannedItems.map(code => `
-        <div class="flex items-center justify-between bg-white px-2.5 py-1.5 rounded border border-slate-200">
-          <span class="font-mono font-bold text-slate-800">✅ ${escapeHtml(code)}</span>
-          <span class="text-[10px] text-emerald-700 font-bold">リスト追加済</span>
-        </div>
-      `).join('');
-    }
-
-    // ==========================================
-    // 配達先 & 配達完了時間・不在時間 管理
-    // ==========================================
-    function addDeliveryItem(presetName = '', presetMemo = '', silent = false) {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      rec.deliveries.push({
-        id: Date.now() + Math.random(),
-        destination: presetName,
-        memo: presetMemo,
-        status: 'pending',
-        completedTime: '',
-        absentTime: ''
-      });
-      saveRecord(dateStr, rec);
-      renderDeliveries();
-      if (!silent) {
-        showToast(presetName ? `「${presetName}」を追加しました` : '配達先を追加しました', '📦');
-      }
-    }
-
-    function completeDeliveryNow(idx) {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      if (!rec.deliveries[idx]) return;
-      const now = getNowTimeStr();
-      rec.deliveries[idx].status = 'completed';
-      rec.deliveries[idx].completedTime = now;
-      saveRecord(dateStr, rec);
-      renderDeliveries();
-      const name = rec.deliveries[idx].destination || `配達先 #${idx + 1}`;
-      showToast(`${name} を [${now}] に配達完了しました`, '✅');
-    }
-
-    function setDeliveryStatus(idx, status) {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      if (!rec.deliveries[idx]) return;
-      const now = getNowTimeStr();
-      rec.deliveries[idx].status = status;
-      if (status === 'completed' && !rec.deliveries[idx].completedTime) {
-        rec.deliveries[idx].completedTime = now;
-      } else if (status === 'absent') {
-        rec.deliveries[idx].absentTime = now;
-        rec.deliveries[idx].completedTime = '';
-        const name = rec.deliveries[idx].destination || `配達先 #${idx + 1}`;
-        showToast(`${name} を [${now}] に不在記録しました`, '🔄');
-      } else if (status === 'pending') {
-        rec.deliveries[idx].completedTime = '';
-        rec.deliveries[idx].absentTime = '';
-      }
-      saveRecord(dateStr, rec);
-      renderDeliveries();
-    }
-
-    function updateDeliveryField(idx, key, val) {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      if (!rec.deliveries[idx]) return;
-      rec.deliveries[idx][key] = val;
-      if (key === 'completedTime' && val) {
-        rec.deliveries[idx].status = 'completed';
-      }
-      saveRecord(dateStr, rec);
-      if (key === 'completedTime') renderDeliveries();
-    }
-
-    function removeDeliveryItem(idx) {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      rec.deliveries.splice(idx, 1);
-      saveRecord(dateStr, rec);
-      renderDeliveries();
-      showToast('配達先を削除しました', '🗑️');
-    }
-
-    function renderDeliveries() {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      const container = document.getElementById('deliveries-container');
-
-      if (rec.deliveries.length === 0) {
-        container.innerHTML = `
-          <div class="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-300 space-y-2">
-            <p class="text-sm font-bold text-slate-500">まだ配達先が登録されていません</p>
-            <p class="text-xs text-slate-400">右上の「📷 カメラ読取」または「＋ 手動追加」から登録してください</p>
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = rec.deliveries.map((item, idx) => {
-        const isDone = item.status === 'completed';
-        const isAbsent = item.status === 'absent';
-        const cardStyle = isDone
-          ? 'bg-emerald-50/70 border-emerald-300'
-          : isAbsent
-            ? 'bg-amber-50/70 border-amber-300'
-            : 'bg-slate-50 border-slate-200';
-
-        const badge = isDone
-          ? `<span class="bg-emerald-600 text-white text-xs font-extrabold px-2.5 py-1 rounded-md">✅ 完了 ${escapeHtml(item.completedTime)}</span>`
-          : isAbsent
-            ? `<span class="bg-amber-500 text-white text-xs font-extrabold px-2.5 py-1 rounded-md">🔄 不在 ${escapeHtml(item.absentTime || '')}</span>`
-            : `<span class="bg-blue-600 text-white text-xs font-extrabold px-2.5 py-1 rounded-md">⏳ 未配達</span>`;
-
-        return `
-          <div class="border rounded-xl p-3.5 space-y-2.5 transition ${cardStyle}">
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex items-center gap-2">
-                <span class="text-xs font-black text-slate-500">#${idx + 1}</span>
-                ${badge}
-              </div>
-              <div class="flex items-center gap-1.5">
-                ${item.destination ? `<button onclick="analyzeSpecificDest('${escapeHtml(item.destination).replace(/'/g, "\\'")}')" class="bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 text-xs font-bold px-2.5 py-1 rounded-lg btn-press">📊 傾向</button>` : ''}
-                <button onclick="removeDeliveryItem(${idx})" class="bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold px-2.5 py-1 rounded-lg btn-press">🗑️ 削除</button>
-              </div>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-12 gap-2">
-              <div class="sm:col-span-7">
-                <label class="block text-[11px] font-bold text-slate-500 mb-0.5">配達先（宛先・建物名・住所）</label>
-                <input type="text" value="${escapeHtml(item.destination)}" placeholder="例: 〇〇マンション 302号室 山田様" oninput="updateDeliveryField(${idx}, 'destination', this.value)" class="w-full border border-slate-300 bg-white rounded-lg px-3 py-2 font-bold text-sm">
-              </div>
-              <div class="sm:col-span-5">
-                <label class="block text-[11px] font-bold text-slate-500 mb-0.5">備考・追跡番号・置き配指定</label>
-                <input type="text" value="${escapeHtml(item.memo)}" placeholder="例: 玄関前置き配 / 時間指定14-16" oninput="updateDeliveryField(${idx}, 'memo', this.value)" class="w-full border border-slate-300 bg-white rounded-lg px-3 py-2 text-sm">
-              </div>
-            </div>
-
-            <div class="grid grid-cols-12 gap-2 pt-1 items-end">
-              <div class="col-span-6 sm:col-span-5">
-                <button onclick="completeDeliveryNow(${idx})" class="w-full h-11 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-lg shadow-sm btn-press text-xs sm:text-sm flex items-center justify-center gap-1">
-                  <span>✅</span> 完了打刻 (現在時刻)
-                </button>
-              </div>
-              <div class="col-span-3 sm:col-span-4">
-                <label class="block text-[10px] font-bold text-slate-500">配達完了時間</label>
-                <input type="time" value="${escapeHtml(item.completedTime)}" onchange="updateDeliveryField(${idx}, 'completedTime', this.value)" class="w-full h-11 border border-slate-300 bg-white rounded-lg px-2 font-bold text-center text-sm">
-              </div>
-              <div class="col-span-3 sm:col-span-3">
-                <button onclick="setDeliveryStatus(${idx}, '${isAbsent ? 'pending' : 'absent'}')" class="w-full h-11 ${isAbsent ? 'bg-slate-700 text-white' : 'bg-amber-100 text-amber-900 border border-amber-300'} font-extrabold rounded-lg btn-press text-xs">
-                  ${isAbsent ? '⏳ 未配達に戻す' : '🔄 不在'}
-                </button>
-              </div>
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    // ==========================================
-    // 在宅率・配達先別＆時間帯分析ロジック
-    // ==========================================
-    function analyzeSpecificDest(destName) {
-      switchTab('analytics');
-      const filterInput = document.getElementById('dest-filter-input');
-      if (filterInput) filterInput.value = '';
-      updateDestinationSelector(destName);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    function setAnalyticsScope(scope) {
-      analyticsScope = scope;
-      const allBtn = document.getElementById('scope-all-btn');
-      const dayBtn = document.getElementById('scope-day-btn');
-      if (scope === 'all') {
-        allBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold bg-indigo-600 text-white shadow-xs transition';
-        dayBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold text-slate-600 transition';
-      } else {
-        dayBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold bg-indigo-600 text-white shadow-xs transition';
-        allBtn.className = 'px-3 py-1.5 rounded-lg text-xs font-extrabold text-slate-600 transition';
-      }
-      renderAnalytics();
-    }
-
-    function getTimeSlotIndex(timeStr) {
-      if (!timeStr || !timeStr.includes(':')) return -1;
-      const hour = parseInt(timeStr.split(':')[0], 10);
-      if (isNaN(hour)) return -1;
-      if (hour < 12) return 0;
-      if (hour < 14) return 1;
-      if (hour < 16) return 2;
-      if (hour < 18) return 3;
-      if (hour < 20) return 4;
-      return 5;
-    }
-
-    function getAllUniqueDestinations() {
-      const all = getAllRecords();
-      const map = {};
-      Object.values(all).forEach(r => {
-        (r.deliveries || []).forEach(d => {
-          const name = (d.destination || '').trim();
-          if (!name) return;
-          if (!map[name]) {
-            map[name] = { name, completed: 0, absent: 0, pending: 0, logs: [] };
-          }
-          if (d.status === 'completed') map[name].completed++;
-          else if (d.status === 'absent') map[name].absent++;
-          else map[name].pending++;
-
-          map[name].logs.push({
-            date: r.date,
-            status: d.status,
-            time: d.status === 'completed' ? d.completedTime : (d.status === 'absent' ? d.absentTime : ''),
-            memo: d.memo || ''
-          });
-        });
-      });
-      return Object.values(map).sort((a, b) => (b.completed + b.absent + b.pending) - (a.completed + a.absent + a.pending));
-    }
-
-    function updateDestinationSelector(preferredDest = null) {
-      const selectEl = document.getElementById('dest-analytics-select');
-      const keyword = (document.getElementById('dest-filter-input').value || '').trim().toLowerCase();
-      const currentSelected = preferredDest !== null ? preferredDest : selectEl.value;
-
-      const allDests = getAllUniqueDestinations();
-      const filtered = keyword
-        ? allDests.filter(d => d.name.toLowerCase().includes(keyword))
-        : allDests;
-
-      if (filtered.length === 0) {
-        selectEl.innerHTML = `<option value="">-- 該当する配達先がありません --</option>`;
-        renderSingleDestinationAnalytics();
-        return;
-      }
-
-      selectEl.innerHTML = filtered.map(d => {
-        const visits = d.completed + d.absent;
-        const rateText = visits > 0 ? `在宅率 ${Math.round((d.completed / visits) * 100)}%` : '未判定';
-        return `<option value="${escapeHtml(d.name)}">${escapeHtml(d.name)}（完了${d.completed}/不在${d.absent}・${rateText}）</option>`;
-      }).join('');
-
-      if (currentSelected && filtered.some(d => d.name === currentSelected)) {
-        selectEl.value = currentSelected;
-      } else {
-        selectEl.value = filtered[0].name;
-      }
-      renderSingleDestinationAnalytics();
-    }
-
-    function renderSingleDestinationAnalytics() {
-      const selectEl = document.getElementById('dest-analytics-select');
-      const targetName = selectEl.value;
-      const box = document.getElementById('single-dest-detail-box');
-
-      if (!targetName) {
-        box.innerHTML = `
-          <div class="bg-slate-50 border border-dashed border-slate-300 rounded-xl p-4 text-center text-xs text-slate-500">
-            配達先を登録して「✅ 完了打刻」または「🔄 不在」を記録すると、配達先ごとの最適時間帯がここに表示されます。
-          </div>
-        `;
-        return;
-      }
-
-      const allDests = getAllUniqueDestinations();
-      const target = allDests.find(d => d.name === targetName);
-      if (!target) {
-        box.innerHTML = '';
-        return;
-      }
-
-      const slots = [
-        { label: '午前 (〜11:59)', short: '午前', completed: 0, absent: 0 },
-        { label: '12:00〜13:59', short: '12-14時', completed: 0, absent: 0 },
-        { label: '14:00〜15:59', short: '14-16時', completed: 0, absent: 0 },
-        { label: '16:00〜17:59', short: '16-18時', completed: 0, absent: 0 },
-        { label: '18:00〜19:59', short: '18-20時', completed: 0, absent: 0 },
-        { label: '20:00〜', short: '20時〜', completed: 0, absent: 0 }
-      ];
-
-      target.logs.forEach(log => {
-        const sIdx = getTimeSlotIndex(log.time);
-        if (sIdx >= 0) {
-          if (log.status === 'completed') slots[sIdx].completed++;
-          else if (log.status === 'absent') slots[sIdx].absent++;
-        }
-      });
-
-      const activeSlots = slots.map(s => {
-        const v = s.completed + s.absent;
-        return { ...s, visits: v, rate: v > 0 ? Math.round((s.completed / v) * 100) : null };
-      });
-
-      const bestSlot = [...activeSlots]
-        .filter(s => s.completed > 0)
-        .sort((a, b) => (b.rate - a.rate) || (b.completed - a.completed))[0];
-
-      const absentSlot = [...activeSlots]
-        .filter(s => s.absent > 0 && s.rate < 50)
-        .sort((a, b) => (a.rate - b.rate) || (b.absent - a.absent))[0];
-
-      const visits = target.completed + target.absent;
-      const totalRate = visits > 0 ? Math.round((target.completed / visits) * 100) : 0;
-
-      const slotGridHtml = activeSlots.map(s => {
-        const badgeClass = s.visits === 0
-          ? 'bg-slate-50 border-slate-200 text-slate-400'
-          : s.rate >= 80
-            ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
-            : s.rate >= 50
-              ? 'bg-blue-50 border-blue-200 text-blue-900'
-              : 'bg-amber-50 border-amber-300 text-amber-900';
-        return `
-          <div class="border rounded-lg p-2 text-center ${badgeClass}">
-            <p class="text-[10px] font-bold">${s.short}</p>
-            <p class="text-sm font-black mt-0.5">${s.visits > 0 ? `${s.rate}%` : '--'}</p>
-            <p class="text-[10px] mt-0.5">完${s.completed}/不${s.absent}</p>
-          </div>
-        `;
-      }).join('');
-
-      const recentLogsHtml = [...target.logs]
-        .sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')))
-        .slice(0, 8)
-        .map(l => {
-          const stBadge = l.status === 'completed'
-            ? `<span class="text-emerald-700 font-extrabold">✅ 完了 (${escapeHtml(l.time || '時刻なし')})</span>`
-            : l.status === 'absent'
-              ? `<span class="text-amber-700 font-extrabold">🔄 不在 (${escapeHtml(l.time || '時刻なし')})</span>`
-              : `<span class="text-blue-700 font-extrabold">⏳ 未配達</span>`;
-          return `
-            <div class="flex flex-wrap items-center justify-between gap-2 py-1.5 px-2.5 bg-white border border-slate-200 rounded-lg text-xs">
-              <div class="flex items-center gap-2">
-                <span class="font-mono font-bold text-slate-500">${escapeHtml(l.date)}</span>
-                ${stBadge}
-              </div>
-              <span class="text-slate-500 truncate max-w-[200px]">${escapeHtml(l.memo || '')}</span>
-            </div>
-          `;
-        }).join('');
-
-      box.innerHTML = `
-        <div class="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3.5 space-y-3">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <span class="text-[11px] font-bold text-indigo-700">選択中の配達先</span>
-              <h3 class="text-base font-black text-slate-900">${escapeHtml(target.name)}</h3>
-            </div>
-            <div class="text-right">
-              <span class="inline-block bg-white border border-indigo-200 px-3 py-1 rounded-full text-xs font-black text-indigo-900">
-                総合在宅率: ${totalRate}%（完了 ${target.completed}回 / 不在 ${target.absent}回）
-              </span>
-            </div>
-          </div>
-
-          <div class="bg-white border border-indigo-200 rounded-lg p-2.5 text-xs space-y-1">
-            <p class="font-extrabold text-emerald-800">
-              🎯 狙い目時間帯：${bestSlot ? `【${bestSlot.label}】（在宅率 ${bestSlot.rate}%・完了 ${bestSlot.completed}回）` : '完了時刻データ蓄積中'}
-            </p>
-            ${absentSlot ? `<p class="font-bold text-amber-700">⚠️ 不在傾向：【${absentSlot.label}】は不在率が高いため別時間帯の訪問がおすすめです</p>` : ''}
-          </div>
-
-          <div>
-            <p class="text-[11px] font-bold text-slate-600 mb-1.5">時間帯別の在宅率ヒートマップ（この配達先専用）</p>
-            <div class="grid grid-cols-3 sm:grid-cols-6 gap-1.5">${slotGridHtml}</div>
-          </div>
-
-          <div class="space-y-1.5">
-            <p class="text-[11px] font-bold text-slate-600">過去の訪問・配達履歴（直近8件）</p>
-            <div class="space-y-1">${recentLogsHtml}</div>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderAnalytics() {
-      const dateStr = document.getElementById('target-date').value;
-      const all = getAllRecords();
-      const targetRecords = analyticsScope === 'day'
-        ? [getRecord(dateStr)]
-        : Object.values(all);
-
-      const slots = [
-        { label: '午前 (〜11:59)', short: '午前', completed: 0, absent: 0 },
-        { label: '昼間 (12:00〜13:59)', short: '12-14時', completed: 0, absent: 0 },
-        { label: '午後① (14:00〜15:59)', short: '14-16時', completed: 0, absent: 0 },
-        { label: '夕方 (16:00〜17:59)', short: '16-18時', completed: 0, absent: 0 },
-        { label: '夜間① (18:00〜19:59)', short: '18-20時', completed: 0, absent: 0 },
-        { label: '夜間② (20:00〜)', short: '20時〜', completed: 0, absent: 0 }
-      ];
-
-      let totalCompleted = 0;
-      let totalAbsent = 0;
-      let totalUnstampedAbsent = 0;
-
-      targetRecords.forEach(r => {
-        (r.deliveries || []).forEach(d => {
-          if (d.status === 'completed') {
-            totalCompleted++;
-            const sIdx = getTimeSlotIndex(d.completedTime);
-            if (sIdx >= 0) slots[sIdx].completed++;
-          } else if (d.status === 'absent') {
-            totalAbsent++;
-            const sIdx = getTimeSlotIndex(d.absentTime);
-            if (sIdx >= 0) {
-              slots[sIdx].absent++;
-            } else {
-              totalUnstampedAbsent++;
-            }
-          }
-        });
-      });
-
-      const activeSlots = [];
-      slots.forEach(s => {
-        const visits = s.completed + s.absent;
-        s.visits = visits;
-        s.rate = visits > 0 ? Math.round((s.completed / visits) * 100) : null;
-        if (visits > 0) activeSlots.push(s);
-      });
-
-      let bestSlot = null;
-      let worstSlot = null;
-      if (activeSlots.length > 0) {
-        bestSlot = [...activeSlots].sort((a, b) => (b.rate - a.rate) || (b.completed - a.completed))[0];
-        worstSlot = [...activeSlots].sort((a, b) => (a.rate - b.rate) || (b.absent - a.absent))[0];
-      }
-
-      const overallVisits = totalCompleted + totalAbsent;
-      const overallRate = overallVisits > 0 ? Math.round((totalCompleted / overallVisits) * 100) : 0;
-
-      document.getElementById('analytics-insight-cards').innerHTML = `
-        <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
-          <p class="text-[11px] font-extrabold text-emerald-700">🏆 全体ゴールデンタイム</p>
-          <p class="text-base font-black text-emerald-950 mt-0.5">${bestSlot ? `${bestSlot.short}（在宅率 ${bestSlot.rate}%）` : 'データ蓄積待ち'}</p>
-          <p class="text-[11px] text-emerald-700 mt-0.5">${bestSlot ? `完了 ${bestSlot.completed}件 / 不在 ${bestSlot.absent}件` : '完了・不在を打刻すると自動判定'}</p>
-        </div>
-        <div class="bg-amber-50 border border-amber-200 rounded-xl p-3">
-          <p class="text-[11px] font-extrabold text-amber-700">⚠️ 全体で不在が多い時間帯</p>
-          <p class="text-base font-black text-amber-950 mt-0.5">${worstSlot && worstSlot.absent > 0 ? `${worstSlot.short}（在宅率 ${worstSlot.rate}%）` : '不在データなし'}</p>
-          <p class="text-[11px] text-amber-700 mt-0.5">${worstSlot && worstSlot.absent > 0 ? `不在 ${worstSlot.absent}件（別時間帯の再配達推奨）` : '不在ボタンを押すと時間帯を記録'}</p>
-        </div>
-        <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-3">
-          <p class="text-[11px] font-extrabold text-indigo-700">📈 対象期間の総合在宅率</p>
-          <p class="text-base font-black text-indigo-950 mt-0.5">${overallRate}% <span class="text-xs font-bold">(${totalCompleted}/${overallVisits}件)</span></p>
-          <p class="text-[11px] text-indigo-700 mt-0.5">${analyticsScope === 'all' ? '全稼働日の蓄積データ合計' : `${dateStr} の実績`}</p>
-        </div>
-      `;
-
-      document.getElementById('hourly-chart-container').innerHTML = slots.map(s => {
-        const hasData = s.visits > 0;
-        const rateVal = hasData ? s.rate : 0;
-        const barColor = !hasData
-          ? 'bg-slate-200'
-          : rateVal >= 80
-            ? 'bg-emerald-500'
-            : rateVal >= 50
-              ? 'bg-blue-500'
-              : 'bg-amber-500';
-
-        const isBest = bestSlot && bestSlot.label === s.label && hasData;
-
-        return `
-          <div class="bg-slate-50 border ${isBest ? 'border-emerald-400 ring-1 ring-emerald-300' : 'border-slate-200'} rounded-xl p-2.5 space-y-1.5">
-            <div class="flex items-center justify-between text-xs">
-              <div class="flex items-center gap-1.5 font-extrabold text-slate-800">
-                <span>${s.label}</span>
-                ${isBest ? '<span class="bg-emerald-600 text-white text-[10px] px-1.5 py-0.5 rounded">BEST</span>' : ''}
-              </div>
-              <div class="flex items-center gap-2">
-                <span class="text-[11px] text-slate-600">完了 <strong class="text-emerald-700">${s.completed}</strong> / 不在 <strong class="text-amber-700">${s.absent}</strong></span>
-                <span class="font-black text-sm ${hasData ? 'text-slate-900' : 'text-slate-400'} w-12 text-right">${hasData ? `${s.rate}%` : '--%'}</span>
-              </div>
-            </div>
-            <div class="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
-              <div class="${barColor} h-2.5 rounded-full transition-all duration-300" style="width: ${rateVal}%"></div>
-            </div>
-          </div>
-        `;
-      }).join('') + (totalUnstampedAbsent > 0 ? `<p class="text-[11px] text-slate-400 pt-1">※時刻未記録の不在データが ${totalUnstampedAbsent} 件あります。</p>` : '');
-
-      const allDests = getAllUniqueDestinations().filter(d => (d.completed + d.absent) > 0);
-      const destBox = document.getElementById('dest-analytics-container');
-      if (allDests.length === 0) {
-        destBox.innerHTML = `<p class="text-slate-400 py-3 text-center">配達先名を入力して完了・不在を記録すると、配達先別の在宅率一覧が表示されます。</p>`;
-      } else {
-        destBox.innerHTML = allDests.map(d => {
-          const total = d.completed + d.absent;
-          const rate = Math.round((d.completed / total) * 100);
-          return `
-            <button onclick="analyzeSpecificDest('${escapeHtml(d.name).replace(/'/g, "\\'")}')" class="w-full text-left flex flex-wrap items-center justify-between gap-2 bg-slate-50 hover:bg-indigo-50/60 border border-slate-200 hover:border-indigo-300 rounded-lg px-3 py-2.5 transition btn-press">
-              <div>
-                <p class="font-extrabold text-slate-800">${escapeHtml(d.name)}</p>
-                <p class="text-[11px] text-slate-500">完了 ${d.completed}件 / 不在 ${d.absent}件（タップして時間帯傾向を見る）</p>
-              </div>
-              <span class="px-2.5 py-1 rounded-full font-extrabold ${rate >= 80 ? 'bg-emerald-100 text-emerald-800' : rate >= 50 ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'}">
-                在宅率 ${rate}%
-              </span>
-            </button>
-          `;
-        }).join('');
-      }
-
-      updateDestinationSelector();
-
-      const todayRec = getRecord(dateStr);
-      const absentList = todayRec.deliveries
-        .map((d, idx) => ({ ...d, idx }))
-        .filter(d => d.status === 'absent');
-
-      document.getElementById('absent-followup-count').textContent = `${absentList.length}件`;
-      const followupBox = document.getElementById('absent-followup-container');
-      if (absentList.length === 0) {
-        followupBox.innerHTML = `<p class="text-slate-400 py-3 text-center">選択日（${dateStr}）の不在持戻はありません。</p>`;
-      } else {
-        followupBox.innerHTML = absentList.map(item => `
-          <div class="flex flex-wrap items-center justify-between gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
-            <div>
-              <p class="font-extrabold text-slate-900">#${item.idx + 1} ${escapeHtml(item.destination || '配達先未入力')}</p>
-              <p class="text-[11px] text-amber-800">不在記録: ${escapeHtml(item.absentTime || '時刻なし')} ${item.memo ? `/ ${escapeHtml(item.memo)}` : ''}</p>
-            </div>
-            <button onclick="completeFromAnalytics(${item.idx})" class="bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold px-3 py-1.5 rounded-lg shadow-xs btn-press">
-              ✅ 今すぐ再配達完了
-            </button>
-          </div>
-        `).join('');
-      }
-    }
-
-    function completeFromAnalytics(idx) {
-      completeDeliveryNow(idx);
-      renderAnalytics();
-    }
-
-    // カスタム配達先チップ
-    function addCustomDestChip() {
-      const input = document.getElementById('new-dest-chip');
-      const val = input.value.trim();
-      if (!val) return;
-      const chips = loadDestChips();
-      if (!chips.includes(val)) {
-        chips.push(val);
-        saveDestChips(chips);
-        input.value = '';
-        showToast(`「${val}」を登録しました`);
-      }
-    }
-
-    function removeCustomDestChip(idx) {
-      const chips = loadDestChips();
-      chips.splice(idx, 1);
-      saveDestChips(chips);
-    }
-
-    function renderDestChips() {
-      const chips = loadDestChips();
-      document.getElementById('custom-dest-list').innerHTML = chips.map((c, i) => `
-        <span class="inline-flex items-center gap-1.5 bg-slate-100 border border-slate-300 px-2.5 py-1 rounded-lg text-xs font-bold">
-          ${escapeHtml(c)}
-          <button onclick="removeCustomDestChip(${i})" class="text-rose-600 hover:text-rose-800 font-extrabold ml-1">🗑️ 削除</button>
+    function renderPresets() {
+      const s = getSettings();
+      const tagBox = document.getElementById('presetTagsContainer');
+      const quickBox = document.getElementById('quickAddChips');
+
+      tagBox.innerHTML = s.presets.map((p, i) => `
+        <span class="inline-flex items-center gap-1 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-xs">
+          <span>${p}</span>
+          <button type="button" onclick="removePreset(${i})" class="text-rose-600 font-bold px-1">🗑️ 削除</button>
         </span>
       `).join('');
 
-      document.getElementById('quick-dest-chips').innerHTML = chips.map((c, i) => `
-        <button onclick="addDeliveryItemByIndex(${i})" class="bg-white border border-blue-200 hover:bg-blue-50 text-blue-900 text-xs font-bold px-3 py-1.5 rounded-lg shadow-xs btn-press">
-          ＋ ${escapeHtml(c)}
+      quickBox.innerHTML = `<span class="text-[11px] font-bold text-slate-500">クイック追加:</span>` + s.presets.map(p => `
+        <button type="button" onclick="addDeliveryItem('${p.replace(/'/g, "\\'")}', '')" class="px-2.5 py-1 bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-200 rounded-lg font-bold text-xs">
+          ＋ ${p}
         </button>
       `).join('');
     }
 
-    function addDeliveryItemByIndex(idx) {
-      const chips = loadDestChips();
-      if (chips[idx]) addDeliveryItem(chips[idx]);
+    function addPreset() {
+      const inp = document.getElementById('newPresetInput');
+      const val = (inp.value || '').trim();
+      if (!val) return;
+      const s = getSettings();
+      s.presets.push(val);
+      localStorage.setItem(DELIVERY_SETTINGS_KEY, JSON.stringify(s));
+      inp.value = '';
+      renderPresets();
+      showToast('エリア候補を追加しました', 'success');
     }
 
-    // 点呼・点検ヘルパー
-    function passAllInspection() {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      rec.preInspection = '良好（異常なし）';
-      rec.preHealth = '良好（睡眠十分）';
-      rec.preAlcohol = '0.00';
-      saveRecord(dateStr, rec);
-      loadDateIntoForm(dateStr);
-      showToast('日常点検・健康状態を「良好」にセットしました');
+    function removePreset(idx) {
+      const s = getSettings();
+      s.presets.splice(idx, 1);
+      localStorage.setItem(DELIVERY_SETTINGS_KEY, JSON.stringify(s));
+      renderPresets();
     }
 
-    function appendInstruction(text) {
-      const input = document.getElementById('preInstruction');
-      const cur = input.value.trim();
-      if (!cur) {
-        input.value = text;
-      } else if (!cur.includes(text)) {
-        input.value = `${cur}、${text}`;
+    function getAllRecords() {
+      try {
+        return JSON.parse(localStorage.getItem(DELIVERY_STORAGE_KEY)) || {};
+      } catch (e) {
+        return {};
       }
-      updateField('preInstruction', input.value);
     }
 
-    // ==========================================
-    // 再計算 & フォーム同期
-    // ==========================================
-    function recalculateAll() {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-
-      const totalCount = rec.deliveries.length;
-      const completedCount = rec.deliveries.filter(d => d.status === 'completed').length;
-      const absentCount = rec.deliveries.filter(d => d.status === 'absent').length;
-      const pendingCount = rec.deliveries.filter(d => d.status === 'pending').length;
-
-      document.getElementById('stat-total').textContent = totalCount;
-      document.getElementById('stat-completed').textContent = completedCount;
-      document.getElementById('stat-absent').textContent = absentCount;
-      document.getElementById('stat-pending').textContent = pendingCount;
-
-      const rate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
-      document.getElementById('delivery-rate-badge').textContent = `完了率: ${rate}% (${completedCount}/${totalCount}件)`;
-
-      const isPiece = rec.revType === 'piece';
-      document.getElementById('box-fixed-rev').classList.toggle('hidden', isPiece);
-      document.getElementById('box-piece-rate').classList.toggle('hidden', !isPiece);
-
-      const totalRev = isPiece
-        ? completedCount * (Number(rec.pieceRate) || 0)
-        : (Number(rec.fixedRevenue) || 0);
-
-      const totalExp = (Number(rec.expGas) || 0) + (Number(rec.expToll) || 0) + (Number(rec.expOther) || 0);
-      const netProfit = totalRev - totalExp;
-
-      document.getElementById('disp-total-rev').textContent = totalRev.toLocaleString();
-      document.getElementById('disp-total-exp').textContent = totalExp.toLocaleString();
-      document.getElementById('disp-net-profit').textContent = netProfit.toLocaleString();
-
-      if (currentTab === 'analytics') renderAnalytics();
-      if (currentTab === 'report') renderReport();
+    function saveAllRecords(all) {
+      localStorage.setItem(DELIVERY_STORAGE_KEY, JSON.stringify(all));
     }
 
-    function loadDateIntoForm(dateStr) {
-      const rec = getRecord(dateStr);
-      document.getElementById('clientType').value = rec.clientType;
-      document.getElementById('courseName').value = rec.courseName;
-
-      document.getElementById('preExecutor').value = rec.preExecutor;
-      document.getElementById('preMethod').value = rec.preMethod;
-      document.getElementById('preAlcohol').value = rec.preAlcohol;
-      document.getElementById('preInspection').value = rec.preInspection;
-      document.getElementById('preHealth').value = rec.preHealth;
-      document.getElementById('preInstruction').value = rec.preInstruction;
-
-      document.getElementById('postExecutor').value = rec.postExecutor;
-      document.getElementById('postMethod').value = rec.postMethod;
-      document.getElementById('postAlcohol').value = rec.postAlcohol;
-      document.getElementById('postVehicle').value = rec.postVehicle;
-
-      document.getElementById('revType').value = rec.revType;
-      document.getElementById('fixedRevenue').value = rec.fixedRevenue;
-      document.getElementById('pieceRate').value = rec.pieceRate;
-      document.getElementById('expGas').value = rec.expGas;
-      document.getElementById('expToll').value = rec.expToll;
-      document.getElementById('expOther').value = rec.expOther;
-
-      renderDeliveries();
-      recalculateAll();
+    function getDayItems(dateStr) {
+      const all = getAllRecords();
+      return Array.isArray(all[dateStr]) ? all[dateStr] : [];
     }
 
-    // ==========================================
-    // 日報生成・LINE送信・スプレッドシート送信
-    // ==========================================
-    function setReportTemplate(tpl, btnEl) {
-      currentTemplate = tpl;
-      document.querySelectorAll('.tpl-btn').forEach(b => {
-        b.classList.remove('bg-blue-600', 'text-white');
-        b.classList.add('bg-slate-200', 'text-slate-700');
-      });
-      if (btnEl) {
-        btnEl.classList.remove('bg-slate-200', 'text-slate-700');
-        btnEl.classList.add('bg-blue-600', 'text-white');
-      }
-      renderReport();
+    function saveDayItems(dateStr, items) {
+      const all = getAllRecords();
+      all[dateStr] = items;
+      saveAllRecords(all);
+      updateKpis();
+      refreshReportPreview();
     }
 
-    function renderReport() {
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      const prof = loadProfile();
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('deliveryDateInput').value = selectedDate;
+      loadSettingsUI();
+      renderDeliveryList();
+      updateKpis();
+      refreshReportPreview();
 
-      const totalCount = rec.deliveries.length;
-      const completedCount = rec.deliveries.filter(d => d.status === 'completed').length;
-      const absentCount = rec.deliveries.filter(d => d.status === 'absent').length;
-      const pendingCount = rec.deliveries.filter(d => d.status === 'pending').length;
-      const rate = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+      window.addEventListener('scroll', handleScrollTop, { passive: true, capture: true });
+      document.addEventListener('scroll', handleScrollTop, { passive: true, capture: true });
+      window.addEventListener('touchmove', handleScrollTop, { passive: true });
+      setInterval(handleScrollTop, 500);
+    });
 
-      const deliveryLines = rec.deliveries.length
-        ? rec.deliveries.map((d, i) => {
-            const st = d.status === 'completed'
-              ? `✅完了(${d.completedTime || '--:--'})`
-              : d.status === 'absent'
-                ? `🔄不在(${d.absentTime || '--:--'})`
-                : '⏳未配達';
-            const memoStr = d.memo ? ` [${d.memo}]` : '';
-            return `  ${i + 1}. ${st} ${d.destination || '配達先未入力'}${memoStr}`;
-          }).join('\n')
-        : '  ・配達先記録なし';
-
-      let text = '';
-      if (currentTemplate === 'amazon') {
-        text = `【配達完了報告】${dateStr}
-担当: ${prof.driver || '未設定'} / コース: ${rec.courseName || '-'}
-車両: ${prof.vehicle || '-'}
-
-■ 配達実績
-・総件数: ${totalCount}件 / 完了: ${completedCount}件（完了率 ${rate}%）
-・不在持戻: ${absentCount}件 / 未配達: ${pendingCount}件
-
-■ 配達先・完了時刻一覧
-${deliveryLines}`;
-      } else if (currentTemplate === 'yamato' || currentTemplate === 'sagawa') {
-        const label = currentTemplate === 'yamato' ? 'ヤマト委託' : '佐川委託';
-        text = `【${label} 配達完了日報】${dateStr}
-所属: ${prof.company || '-'} ${prof.office || ''}
-氏名: ${prof.driver || '-'} / 車両: ${prof.vehicle || '-'}
-コース: ${rec.courseName || '-'}
-
-■ 配達実績
-・完了: ${completedCount}件 / 不在: ${absentCount}件 / 未配達: ${pendingCount}件（計 ${totalCount}件）
-
-■ 配達先・完了時刻
-${deliveryLines}
-
-■ 点呼確認
-・Alc検査: 乗務前 ${rec.preAlcohol}mg/L / 乗務後 ${rec.postAlcohol}mg/L
-・車両状況: ${rec.postVehicle}`;
+    function handleScrollTop(e) {
+      const btn = document.getElementById('btnScrollTop');
+      if (!btn) return;
+      const tScroll = (e && e.target && typeof e.target.scrollTop === 'number') ? e.target.scrollTop : 0;
+      const pos = Math.max(window.scrollY || 0, document.documentElement.scrollTop || 0, document.body.scrollTop || 0, tScroll);
+      if (pos > 60) {
+        btn.classList.remove('opacity-0', 'pointer-events-none');
+        btn.classList.add('opacity-100', 'pointer-events-auto');
       } else {
-        text = `【配達業務日報】${dateStr}
-事業者: ${prof.company || '-'}（${prof.office || '-'}）
-乗務員: ${prof.driver || '-'} / 車両: ${prof.vehicle || '-'}
-案件・コース: ${rec.clientType} / ${rec.courseName || '-'}
+        btn.classList.add('opacity-0', 'pointer-events-none');
+        btn.classList.remove('opacity-100', 'pointer-events-auto');
+      }
+    }
 
-■ 配達実績サマリー
-・総件数: ${totalCount}件（完了: ${completedCount}件 / 不在: ${absentCount}件 / 未配達: ${pendingCount}件）
-・完了率: ${rate}%
+    function scrollToTop() {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      document.documentElement.scrollTo({ top: 0, behavior: 'smooth' });
+      document.body.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 
-■ 配達先 ＆ 配達完了時間
-${deliveryLines}
+    function switchTab(tabId) {
+      ['list', 'map', 'analytics', 'report'].forEach(t => {
+        const btn = document.getElementById(`tab-${t}`);
+        const sec = document.getElementById(`content-${t}`);
+        if (t === tabId) {
+          btn.className = 'py-2.5 rounded-lg text-center bg-brand-800 text-white shadow-sm transition-colors';
+          sec.classList.remove('hidden');
+        } else {
+          btn.className = 'py-2.5 rounded-lg text-center hover:bg-slate-50 transition-colors';
+          sec.classList.add('hidden');
+        }
+      });
 
-■ 点呼・安全確認
-・乗務前: ${rec.preMethod}（執行者:${rec.preExecutor}）Alc:${rec.preAlcohol}mg/L / 点検:${rec.preInspection}
-・指示事項: ${rec.preInstruction}
-・乗務後: ${rec.postMethod}（執行者:${rec.postExecutor}）Alc:${rec.postAlcohol}mg/L / 状況:${rec.postVehicle}`;
+      if (tabId === 'map') {
+        initOrRefreshMap();
+      } else if (tabId === 'analytics') {
+        populateDestSelect();
+        renderTimeSlotChart();
+      } else if (tabId === 'report') {
+        refreshReportPreview();
+      }
+    }
+
+    function changeDate(delta) {
+      const d = new Date(selectedDate);
+      d.setDate(d.getDate() + delta);
+      selectedDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      document.getElementById('deliveryDateInput').value = selectedDate;
+      renderDeliveryList();
+      updateKpis();
+      refreshReportPreview();
+    }
+
+    function onDateChange(val) {
+      selectedDate = val || getTodayStr();
+      renderDeliveryList();
+      updateKpis();
+      refreshReportPreview();
+    }
+
+    function addDeliveryItem(address = '', memo = '') {
+      const items = getDayItems(selectedDate);
+      items.unshift({
+        id: 'DLV-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+        address: address,
+        status: 'pending', // pending | completed | absent
+        time: '',
+        memo: memo,
+        lat: null,
+        lng: null
+      });
+      saveDayItems(selectedDate, items);
+      renderDeliveryList();
+      showToast('配達先を追加しました', 'info');
+    }
+
+    function updateItemField(idx, field, val) {
+      const items = getDayItems(selectedDate);
+      if (!items[idx]) return;
+      items[idx][field] = val;
+      if (field === 'address') {
+        items[idx].lat = null;
+        items[idx].lng = null;
+      }
+      saveDayItems(selectedDate, items);
+    }
+
+    function setItemStatus(idx, status) {
+      const items = getDayItems(selectedDate);
+      if (!items[idx]) return;
+      items[idx].status = status;
+      if (status === 'completed' || status === 'absent') {
+        items[idx].time = getNowTimeStr();
+      } else {
+        items[idx].time = '';
+      }
+      saveDayItems(selectedDate, items);
+      renderDeliveryList();
+      const label = status === 'completed' ? '✅ 配達完了' : status === 'absent' ? '🔄 不在持戻' : '⏳ 未配達';
+      showToast(`${label} (${items[idx].time || '時刻クリア'}) を記録しました`, 'success');
+    }
+
+    function removeDeliveryItem(idx) {
+      const items = getDayItems(selectedDate);
+      items.splice(idx, 1);
+      saveDayItems(selectedDate, items);
+      renderDeliveryList();
+    }
+
+    // Googleマップでピン立て＆ナビ起動（APIキー不要・100%確実）
+    function openGoogleMapsPin(address) {
+      const addr = (address || '').trim();
+      if (!addr) {
+        showToast('先に住所・配達先を入力してください', 'error');
+        return;
+      }
+      const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(addr)}`;
+      window.open(url, '_blank');
+    }
+
+    function jumpToDestAnalytics(address) {
+      switchTab('analytics');
+      const sel = document.getElementById('targetDestSelect');
+      if (sel && address) {
+        sel.value = address;
+        renderSingleDestAnalysis();
+      }
+    }
+
+    function renderDeliveryList() {
+      const items = getDayItems(selectedDate);
+      const container = document.getElementById('deliveryListContainer');
+
+      if (items.length === 0) {
+        container.innerHTML = `
+          <div class="text-center py-8 bg-slate-50 rounded-xl border border-dashed border-slate-300 text-xs text-slate-500 space-y-1">
+            <p class="font-bold text-slate-700">まだ配達先が登録されていません</p>
+            <p>右上の「📷 カメラ読取」または「＋ 手動追加」から登録してください。</p>
+          </div>
+        `;
+        return;
       }
 
-      document.getElementById('line-report-text').value = text;
+      container.innerHTML = items.map((item, idx) => {
+        const isDone = item.status === 'completed';
+        const isAbsent = item.status === 'absent';
+        const cardBorder = isDone ? 'border-emerald-300 bg-emerald-50/40' : isAbsent ? 'border-rose-300 bg-rose-50/40' : 'border-slate-200 bg-slate-50';
+        const badge = isDone
+          ? `<span class="px-2 py-0.5 bg-emerald-600 text-white font-bold rounded text-[11px]">✅ 完了 ${item.time || ''}</span>`
+          : isAbsent
+            ? `<span class="px-2 py-0.5 bg-rose-600 text-white font-bold rounded text-[11px]">🔄 不在 ${item.time || ''}</span>`
+            : `<span class="px-2 py-0.5 bg-slate-200 text-slate-700 font-bold rounded text-[11px]">⏳ 未配達</span>`;
 
-      const tableRows = rec.deliveries.length
-        ? rec.deliveries.map((d, i) => `
-            <tr class="border-b border-slate-200">
-              <td class="py-1.5 px-2 font-bold">${i + 1}</td>
-              <td class="py-1.5 px-2 font-bold">${escapeHtml(d.destination || '未入力')}</td>
-              <td class="py-1.5 px-2">${d.status === 'completed' ? '✅ 配達完了' : d.status === 'absent' ? '🔄 不在持戻' : '⏳ 未配達'}</td>
-              <td class="py-1.5 px-2 font-extrabold text-emerald-700">${escapeHtml(d.status === 'absent' ? (d.absentTime || '--:--') : (d.completedTime || '--:--'))}</td>
-              <td class="py-1.5 px-2 text-slate-500">${escapeHtml(d.memo || '-')}</td>
-            </tr>
-          `).join('')
-        : `<tr><td colspan="5" class="py-3 text-center text-slate-400">配達先の記録がありません</td></tr>`;
+        return `
+          <div class="p-3 rounded-xl border-2 ${cardBorder} space-y-2.5 transition-all">
+            <div class="flex flex-wrap items-center justify-between gap-1.5">
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs font-black text-slate-700">#${items.length - idx}</span>
+                ${badge}
+              </div>
+              <div class="flex items-center gap-1">
+                <button type="button" onclick="openGoogleMapsPin('${(item.address || '').replace(/'/g, "\\'")}')" class="px-2 py-1 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-lg text-[11px] shadow-sm flex items-center gap-1">
+                  <span>🗺️</span>
+                  <span>Googleマップ</span>
+                </button>
+                <button type="button" onclick="jumpToDestAnalytics('${(item.address || '').replace(/'/g, "\\'")}')" class="px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold rounded-lg text-[11px]">
+                  📊 傾向
+                </button>
+                <button type="button" onclick="removeDeliveryItem(${idx})" class="px-2 py-1 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-bold rounded-lg text-[11px]">
+                  🗑️
+                </button>
+              </div>
+            </div>
 
-      document.getElementById('print-preview-area').innerHTML = `
-        <div class="border border-slate-400 p-3 rounded-lg space-y-3">
-          <div class="flex flex-wrap justify-between border-b border-slate-300 pb-1.5 font-bold gap-2">
-            <span>配達完了記録表（${dateStr}）</span>
-            <span>所属: ${escapeHtml(prof.company || '-')} / 乗務員: ${escapeHtml(prof.driver || '-')} / 車両: ${escapeHtml(prof.vehicle || '-')}</span>
+            <div class="space-y-1.5">
+              <input type="text" value="${(item.address || '').replace(/"/g, '&quot;')}" placeholder="配達先住所・マンション名・宛名" oninput="updateItemField(${idx}, 'address', this.value)" class="w-full p-2 border border-slate-300 rounded-lg bg-white text-xs sm:text-sm font-bold text-slate-900">
+              <div class="grid grid-cols-12 gap-1.5">
+                <input type="text" value="${(item.memo || '').replace(/"/g, '&quot;')}" placeholder="部屋番号・置き配指示・追跡番号メモ" oninput="updateItemField(${idx}, 'memo', this.value)" class="col-span-8 p-1.5 border border-slate-200 rounded-lg bg-white text-xs">
+                <input type="time" value="${item.time || ''}" onchange="updateItemField(${idx}, 'time', this.value)" class="col-span-4 p-1.5 border border-slate-200 rounded-lg bg-white text-xs font-mono font-bold text-center">
+              </div>
+            </div>
+
+            <div class="grid grid-cols-3 gap-1.5 pt-0.5">
+              <button type="button" onclick="setItemStatus(${idx}, 'completed')" class="py-2.5 px-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-extrabold rounded-xl text-xs shadow-sm">
+                ✅ 完了打刻
+              </button>
+              <button type="button" onclick="setItemStatus(${idx}, 'absent')" class="py-2.5 px-2 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-extrabold rounded-xl text-xs shadow-sm">
+                🔄 不在打刻
+              </button>
+              <button type="button" onclick="setItemStatus(${idx}, 'pending')" class="py-2.5 px-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold rounded-xl text-xs">
+                ⏳ 未配達に戻す
+              </button>
+            </div>
           </div>
-          <div class="grid grid-cols-4 gap-2 bg-slate-100 p-2 rounded font-bold text-center">
-            <div>総件数: ${totalCount}件</div>
-            <div class="text-emerald-700">配達完了: ${completedCount}件</div>
-            <div class="text-amber-700">不在持戻: ${absentCount}件</div>
-            <div class="text-blue-700">完了率: ${rate}%</div>
+        `;
+      }).join('');
+    }
+
+    function updateKpis() {
+      const items = getDayItems(selectedDate);
+      const total = items.length;
+      const completed = items.filter(i => i.status === 'completed').length;
+      const absent = items.filter(i => i.status === 'absent').length;
+      const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+      document.getElementById('kpiTotal').textContent = total;
+      document.getElementById('kpiCompleted').textContent = completed;
+      document.getElementById('kpiAbsent').textContent = absent;
+      document.getElementById('kpiRate').textContent = `${rate}%`;
+    }
+
+    // ==========================================
+    // 地図ピン立て（Leaflet + OpenStreetMap ジオコーディング）
+    // ==========================================
+    function getGeoCache() {
+      try {
+        return JSON.parse(localStorage.getItem(GEO_CACHE_KEY)) || {};
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function saveGeoCache(cache) {
+      localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(cache));
+    }
+
+    function normalizeJapaneseAddress(raw) {
+      if (!raw) return '';
+      // 部屋番号や建物名・宛名などを削って番地レベルまで抽出し検索ヒット率を上げる
+      let cleaned = raw.replace(/\r?\n/g, ' ').trim();
+      cleaned = cleaned.replace(/[0-9０-９]{3,4}号室.*$/, '');
+      cleaned = cleaned.replace(/様$|御中$/, '').trim();
+      // 丁目・番・号のハイフン表記整理
+      const match = cleaned.match(/([^\s　]+?[都道府県市区町村郡][^\s　0-9０-９]+[0-9０-９\-－丁目番地号]+)/);
+      return match ? match[1] : cleaned.split(/[\s　]/)[0];
+    }
+
+    async function geocodeAddress(address) {
+      const cache = getGeoCache();
+      if (cache[address]) return cache[address];
+
+      const queryAddr = normalizeJapaneseAddress(address);
+      if (!queryAddr) return null;
+
+      try {
+        // 国土地理院 住所検索API（無料・日本国内高精度・APIキー不要）
+        const res = await fetch(`https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(queryAddr)}`);
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0 && data[0].geometry && Array.isArray(data[0].geometry.coordinates)) {
+          const [lng, lat] = data[0].geometry.coordinates;
+          const coord = { lat, lng };
+          cache[address] = coord;
+          saveGeoCache(cache);
+          return coord;
+        }
+      } catch (e) {}
+
+      try {
+        // フォールバック：Nominatim (OpenStreetMap)
+        const res2 = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(queryAddr)}`);
+        const data2 = await res2.json();
+        if (Array.isArray(data2) && data2.length > 0) {
+          const coord = { lat: parseFloat(data2[0].lat), lng: parseFloat(data2[0].lon) };
+          cache[address] = coord;
+          saveGeoCache(cache);
+          return coord;
+        }
+      } catch (e) {}
+
+      return null;
+    }
+
+    function initOrRefreshMap() {
+      if (!leafletMap && typeof L !== 'undefined') {
+        leafletMap = L.map('deliveryMapCanvas').setView([35.5714, 139.3732], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(leafletMap);
+      }
+      if (leafletMap) {
+        setTimeout(() => {
+          leafletMap.invalidateSize();
+          geocodeAndPlotAll(false);
+        }, 120);
+      }
+    }
+
+    async function geocodeAndPlotAll(forceNotify) {
+      const items = getDayItems(selectedDate);
+      const statusEl = document.getElementById('mapStatusText');
+      const quickListEl = document.getElementById('mapItemQuickList');
+
+      // 既存マーカー消去
+      leafletMarkers.forEach(m => leafletMap && leafletMap.removeLayer(m));
+      leafletMarkers = [];
+
+      if (items.length === 0) {
+        statusEl.textContent = '配達先が未登録です';
+        quickListEl.innerHTML = `<p class="text-xs text-slate-500 py-3 text-center">「① 配達先」タブで住所を登録すると地図にピンが立ちます。</p>`;
+        return;
+      }
+
+      statusEl.textContent = '📍 住所から座標を検索中...';
+      const bounds = [];
+      let plottedCount = 0;
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const addr = (item.address || '').trim();
+        if (!addr) continue;
+
+        let coord = (item.lat && item.lng) ? { lat: item.lat, lng: item.lng } : await geocodeAddress(addr);
+        if (coord && leafletMap) {
+          item.lat = coord.lat;
+          item.lng = coord.lng;
+          plottedCount++;
+          bounds.push([coord.lat, coord.lng]);
+
+          const pinColor = item.status === 'completed' ? '#059669' : item.status === 'absent' ? '#e11d48' : '#0284c7';
+          const numLabel = items.length - i;
+          const icon = L.divIcon({
+            className: '',
+            html: `<div class="custom-pin" style="width:28px;height:28px;background:${pinColor};">${numLabel}</div>`,
+            iconSize: [28, 28],
+            iconAnchor: [14, 14]
+          });
+
+          const marker = L.marker([coord.lat, coord.lng], { icon }).addTo(leafletMap);
+          const statusLabel = item.status === 'completed' ? `✅ 完了 (${item.time})` : item.status === 'absent' ? `🔄 不在 (${item.time})` : '⏳ 未配達';
+          marker.bindPopup(`
+            <div style="min-width:180px;font-family:sans-serif;">
+              <div style="font-weight:900;font-size:12px;margin-bottom:4px;">#${numLabel} ${statusLabel}</div>
+              <div style="font-size:12px;font-weight:bold;margin-bottom:6px;">${addr}</div>
+              ${item.memo ? `<div style="font-size:11px;color:#475569;margin-bottom:6px;">メモ: ${item.memo}</div>` : ''}
+              <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                <button onclick="setItemStatus(${i}, 'completed'); initOrRefreshMap();" style="background:#059669;color:#fff;border:none;padding:5px 8px;border-radius:6px;font-size:11px;font-weight:bold;cursor:pointer;">✅ 完了</button>
+                <button onclick="setItemStatus(${i}, 'absent'); initOrRefreshMap();" style="background:#e11d48;color:#fff;border:none;padding:5px 8px;border-radius:6px;font-size:11px;font-weight:bold;cursor:pointer;">🔄 不在</button>
+                <button onclick="openGoogleMapsPin('${addr.replace(/'/g, "\\'")}')" style="background:#0284c7;color:#fff;border:none;padding:5px 8px;border-radius:6px;font-size:11px;font-weight:bold;cursor:pointer;">🗺️ ナビ</button>
+              </div>
+            </div>
+          `);
+          leafletMarkers.push(marker);
+        }
+      }
+
+      saveDayItems(selectedDate, items);
+
+      if (bounds.length > 0 && leafletMap) {
+        leafletMap.fitBounds(bounds, { padding: [35, 35], maxZoom: 16 });
+      }
+
+      statusEl.textContent = `ピン立て完了: ${plottedCount} / ${items.length} 件`;
+
+      quickListEl.innerHTML = items.map((item, idx) => {
+        const badge = item.status === 'completed'
+          ? '<span class="text-emerald-700 font-bold">✅ 完了</span>'
+          : item.status === 'absent'
+            ? '<span class="text-rose-700 font-bold">🔄 不在</span>'
+            : '<span class="text-sky-700 font-bold">⏳ 未配達</span>';
+        return `
+          <div class="p-2.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-2 text-xs">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5">
+                <span class="font-black">#${items.length - idx}</span>
+                ${badge}
+                ${item.lat ? '<span class="text-[10px] text-emerald-700 bg-emerald-50 px-1.5 rounded border border-emerald-200">📍マップ済</span>' : '<span class="text-[10px] text-amber-700 bg-amber-50 px-1.5 rounded border border-amber-200">Googleマップ推奨</span>'}
+              </div>
+              <div class="font-bold text-slate-900 truncate mt-0.5">${item.address || '住所未入力'}</div>
+            </div>
+            <button type="button" onclick="openGoogleMapsPin('${(item.address || '').replace(/'/g, "\\'")}')" class="px-3 py-2 bg-sky-600 hover:bg-sky-700 text-white font-extrabold rounded-lg text-xs whitespace-nowrap shadow-sm">
+              🗺️ ナビ起動
+            </button>
           </div>
-          <table class="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr class="bg-slate-800 text-white">
-                <th class="py-1.5 px-2 w-10">No</th>
-                <th class="py-1.5 px-2">配達先</th>
-                <th class="py-1.5 px-2 w-24">状況</th>
-                <th class="py-1.5 px-2 w-24">記録時間</th>
-                <th class="py-1.5 px-2">備考</th>
-              </tr>
-            </thead>
-            <tbody>${tableRows}</tbody>
-          </table>
+        `;
+      }).join('');
+
+      if (forceNotify) {
+        showToast(`${plottedCount}件の住所を地図にピン立てしました！`, 'success');
+      }
+    }
+
+    // ==========================================
+    // カメラ読取（日本語OCR ＆ バーコード/QR）
+    // ==========================================
+    function openCameraModal(mode = 'ocr') {
+      document.getElementById('cameraModal').classList.remove('hidden');
+      switchCamMode(mode);
+    }
+
+    function closeCameraModal() {
+      stopAllCameras();
+      document.getElementById('cameraModal').classList.add('hidden');
+    }
+
+    function stopAllCameras() {
+      if (activeStream) {
+        activeStream.getTracks().forEach(t => t.stop());
+        activeStream = null;
+      }
+      if (html5QrScanner) {
+        try {
+          html5QrScanner.stop().catch(() => {});
+        } catch (e) {}
+      }
+    }
+
+    function switchCamMode(mode) {
+      stopAllCameras();
+      const ocrBtn = document.getElementById('camTab-ocr');
+      const barBtn = document.getElementById('camTab-barcode');
+      const ocrPanel = document.getElementById('ocrControlPanel');
+      const barPanel = document.getElementById('barcodeControlPanel');
+      const video = document.getElementById('liveVideo');
+      const qrDiv = document.getElementById('qrReaderDiv');
+
+      if (mode === 'ocr') {
+        ocrBtn.className = 'py-2 rounded-lg bg-brand-800 text-white';
+        barBtn.className = 'py-2 rounded-lg text-slate-600';
+        ocrPanel.classList.remove('hidden');
+        barPanel.classList.add('hidden');
+        video.classList.remove('hidden');
+        qrDiv.classList.add('hidden');
+        startLiveVideoForOcr();
+      } else {
+        barBtn.className = 'py-2 rounded-lg bg-brand-800 text-white';
+        ocrBtn.className = 'py-2 rounded-lg text-slate-600';
+        barPanel.classList.remove('hidden');
+        ocrPanel.classList.add('hidden');
+        video.classList.add('hidden');
+        qrDiv.classList.remove('hidden');
+      }
+    }
+
+    async function startLiveVideoForOcr() {
+      const placeholder = document.getElementById('camPlaceholder');
+      const pText = document.getElementById('camPlaceholderText');
+      placeholder.classList.remove('hidden');
+      pText.textContent = 'カメラを起動しています...';
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        pText.textContent = 'この環境ではライブカメラが制限されています。下の「📁 カメラ撮影 / 画像選択」をご利用ください。';
+        return;
+      }
+
+      try {
+        activeStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        const video = document.getElementById('liveVideo');
+        video.srcObject = activeStream;
+        placeholder.classList.add('hidden');
+      } catch (err) {
+        pText.textContent = 'カメラ権限またはプレビュー制限のため、下の「📁 カメラ撮影 / 画像選択」ボタンを押してください。';
+      }
+    }
+
+    async function captureAndRunOcr() {
+      const video = document.getElementById('liveVideo');
+      if (!activeStream || !video.videoWidth) {
+        showToast('ライブカメラ未起動のため、右側の「📁 カメラ撮影 / 画像選択」をお使いください', 'error');
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      await runTesseractOnSource(canvas);
+    }
+
+    async function handleImageFileOcr(input) {
+      if (!input.files || !input.files[0]) return;
+      await runTesseractOnSource(input.files[0]);
+      input.value = '';
+    }
+
+    async function runTesseractOnSource(source) {
+      const prog = document.getElementById('ocrProgressBox');
+      const out = document.getElementById('ocrResultText');
+      prog.classList.remove('hidden');
+      try {
+        const res = await Tesseract.recognize(source, 'jpn+eng');
+        const cleaned = (res.data.text || '').replace(/\n{2,}/g, '\n').trim();
+        out.value = cleaned;
+        showToast('文字を読み取りました！内容を確認してリストへ追加してください', 'success');
+      } catch (e) {
+        showToast('読み取りに失敗しました。明るい場所で再度お試しください', 'error');
+      } finally {
+        prog.classList.add('hidden');
+      }
+    }
+
+    function confirmOcrToList() {
+      const raw = (document.getElementById('ocrResultText').value || '').trim();
+      if (!raw) {
+        showToast('読み取りテキストが空です', 'error');
+        return;
+      }
+      const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const addr = lines[0] || raw;
+      const memo = lines.slice(1).join(' / ');
+      addDeliveryItem(addr, memo);
+      document.getElementById('ocrResultText').value = '';
+      closeCameraModal();
+    }
+
+    function startBarcodeLive() {
+      const placeholder = document.getElementById('camPlaceholder');
+      placeholder.classList.add('hidden');
+      try {
+        html5QrScanner = new Html5Qrcode('qrReaderDiv');
+        html5QrScanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 220, height: 120 } },
+          (decodedText) => {
+            addDeliveryItem(decodedText, 'バーコード/QR読取');
+            showToast(`読取完了: ${decodedText}`, 'success');
+          }
+        ).catch(() => {
+          placeholder.classList.remove('hidden');
+          document.getElementById('camPlaceholderText').textContent = 'ライブ起動制限中。右の「📸 カメラ撮影 / 画像読取」をご利用ください。';
+        });
+      } catch (e) {
+        showToast('バーコードスキャナの起動に失敗しました', 'error');
+      }
+    }
+
+    async function handleBarcodeFileScan(input) {
+      if (!input.files || !input.files[0]) return;
+      try {
+        const fileScanner = new Html5Qrcode('qrFileTempReader');
+        const result = await fileScanner.scanFile(input.files[0], true);
+        addDeliveryItem(result, 'バーコード画像読取');
+        showToast(`バーコード読取成功: ${result}`, 'success');
+        closeCameraModal();
+      } catch (e) {
+        showToast('バーコードを検出できませんでした。ピントを合わせて再撮影してください', 'error');
+      } finally {
+        input.value = '';
+      }
+    }
+
+    // ==========================================
+    // 在宅率・配達先別分析
+    // ==========================================
+    function setAnalyticsScope(scope) {
+      analyticsScope = scope;
+      document.getElementById('scope-all').className = scope === 'all' ? 'px-2.5 py-1 rounded bg-brand-800 text-white' : 'px-2.5 py-1 rounded text-slate-600';
+      document.getElementById('scope-day').className = scope === 'day' ? 'px-2.5 py-1 rounded bg-brand-800 text-white' : 'px-2.5 py-1 rounded text-slate-600';
+      renderTimeSlotChart();
+    }
+
+    function getTimeSlotLabel(timeStr) {
+      if (!timeStr || !timeStr.includes(':')) return null;
+      const h = parseInt(timeStr.split(':')[0], 10);
+      if (h < 12) return '午前 (〜12時)';
+      if (h < 14) return '12〜14時';
+      if (h < 16) return '14〜16時';
+      if (h < 18) return '16〜18時';
+      if (h < 20) return '18〜20時';
+      return '20時〜';
+    }
+
+    function populateDestSelect() {
+      const all = getAllRecords();
+      const set = new Set();
+      Object.values(all).forEach(list => {
+        if (Array.isArray(list)) {
+          list.forEach(item => {
+            if (item.address && item.address.trim()) set.add(item.address.trim());
+          });
+        }
+      });
+      const sel = document.getElementById('targetDestSelect');
+      const cur = sel.value;
+      sel.innerHTML = `<option value="">-- 分析する配達先を選択 (${set.size}件) --</option>` +
+        Array.from(set).map(a => `<option value="${a.replace(/"/g, '&quot;')}">${a}</option>`).join('');
+      if (cur && set.has(cur)) sel.value = cur;
+    }
+
+    function renderSingleDestAnalysis() {
+      const target = document.getElementById('targetDestSelect').value;
+      const box = document.getElementById('singleDestResultBox');
+      if (!target) {
+        box.innerHTML = '配達先を選択すると、狙い目時間帯と過去の訪問履歴が表示されます。';
+        return;
+      }
+
+      const all = getAllRecords();
+      const history = [];
+      Object.keys(all).sort().reverse().forEach(dateKey => {
+        (all[dateKey] || []).forEach(item => {
+          if ((item.address || '').trim() === target && (item.status === 'completed' || item.status === 'absent')) {
+            history.push({ date: dateKey, ...item });
+          }
+        });
+      });
+
+      if (history.length === 0) {
+        box.innerHTML = `<p class="font-bold text-slate-800">${target}</p><p class="mt-1">まだ完了・不在の打刻履歴がありません。</p>`;
+        return;
+      }
+
+      const doneCount = history.filter(h => h.status === 'completed').length;
+      const rate = Math.round((doneCount / history.length) * 100);
+      const bestSlots = {};
+      history.filter(h => h.status === 'completed').forEach(h => {
+        const slot = getTimeSlotLabel(h.time);
+        if (slot) bestSlots[slot] = (bestSlots[slot] || 0) + 1;
+      });
+      const topSlot = Object.entries(bestSlots).sort((a, b) => b[1] - a[1])[0];
+
+      box.innerHTML = `
+        <div class="space-y-2">
+          <div class="font-extrabold text-sm text-slate-900">${target}</div>
+          <div class="flex flex-wrap gap-2">
+            <span class="px-2.5 py-1 bg-emerald-100 text-emerald-900 font-extrabold rounded-lg">在宅率: ${rate}% (${doneCount}/${history.length}回)</span>
+            <span class="px-2.5 py-1 bg-amber-100 text-amber-950 font-extrabold rounded-lg">🎯 狙い目: ${topSlot ? topSlot[0] : 'データ蓄積中'}</span>
+          </div>
+          <div class="pt-1 border-t border-slate-200 space-y-1">
+            ${history.slice(0, 5).map(h => `
+              <div class="flex justify-between text-[11px]">
+                <span>${h.date} ${h.time || ''}</span>
+                <span class="font-bold ${h.status === 'completed' ? 'text-emerald-700' : 'text-rose-700'}">${h.status === 'completed' ? '✅ 配達完了' : '🔄 不在'}</span>
+              </div>
+            `).join('')}
+          </div>
         </div>
       `;
     }
 
-    function copyLineReport() {
-      const txt = document.getElementById('line-report-text').value;
-      navigator.clipboard.writeText(txt).then(() => {
-        showToast('日報テキストをコピーしました！', '📋');
+    function renderTimeSlotChart() {
+      const slots = ['午前 (〜12時)', '12〜14時', '14〜16時', '16〜18時', '18〜20時', '20時〜'];
+      const stats = {};
+      slots.forEach(s => stats[s] = { done: 0, absent: 0 });
+
+      const all = getAllRecords();
+      const keys = analyticsScope === 'day' ? [selectedDate] : Object.keys(all);
+
+      keys.forEach(k => {
+        (all[k] || []).forEach(item => {
+          const slot = getTimeSlotLabel(item.time);
+          if (slot && stats[slot]) {
+            if (item.status === 'completed') stats[slot].done++;
+            if (item.status === 'absent') stats[slot].absent++;
+          }
+        });
       });
+
+      const container = document.getElementById('timeSlotChartContainer');
+      container.innerHTML = slots.map(s => {
+        const d = stats[s].done;
+        const a = stats[s].absent;
+        const tot = d + a;
+        const rate = tot > 0 ? Math.round((d / tot) * 100) : 0;
+        return `
+          <div class="space-y-1">
+            <div class="flex justify-between text-xs font-bold">
+              <span>${s}</span>
+              <span>在宅率 ${rate}% (完了:${d} / 不在:${a})</span>
+            </div>
+            <div class="w-full h-3 bg-slate-200 rounded-full overflow-hidden">
+              <div class="h-full bg-emerald-600 transition-all" style="width:${rate}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
     }
 
-    function sendToLine() {
-      const txt = encodeURIComponent(document.getElementById('line-report-text').value);
-      window.open(`https://line.me/R/msg/text/?${txt}`, '_blank');
+    // ==========================================
+    // 日報・CSV・スプレッドシート2シート送信
+    // ==========================================
+    function refreshReportPreview() {
+      const s = getSettings();
+      const items = getDayItems(selectedDate);
+      const total = items.length;
+      const done = items.filter(i => i.status === 'completed').length;
+      const absent = items.filter(i => i.status === 'absent').length;
+      const rate = total > 0 ? Math.round((done / total) * 100) : 0;
+
+      const lines = items.map((item, idx) => {
+        const st = item.status === 'completed' ? `✅完了(${item.time})` : item.status === 'absent' ? `🔄不在(${item.time})` : '⏳未配達';
+        return `${items.length - idx}. ${st} ${item.address}${item.memo ? ' [' + item.memo + ']' : ''}`;
+      }).join('\n');
+
+      const report = `【配達完了報告】${selectedDate}
+ドライバー: ${s.driver || '未設定'} (${s.vehicle || '車両未設定'})
+コース: ${s.course || '通常便'}
+━━━━━━━━━━━━━━
+■ 総件数: ${total}件
+■ 配達完了: ${done}件 (完了率 ${rate}%)
+■ 不在持戻: ${absent}件
+━━━━━━━━━━━━━━
+【配達明細】
+${lines || '記録なし'}`;
+
+      const box = document.getElementById('lineReportBox');
+      if (box) box.value = report;
+
+      document.getElementById('prSubHeader').textContent = `記録日: ${selectedDate} | ドライバー: ${s.driver || '未設定'} | 車両: ${s.vehicle || '未設定'}`;
+      document.getElementById('prStatsSummary').textContent = `総件数: ${total}件 / 完了: ${done}件 (${rate}%)`;
+      document.getElementById('prTableBody').innerHTML = items.map((item, idx) => `
+        <tr>
+          <td class="border border-slate-300 p-1.5 text-center font-bold">${items.length - idx}</td>
+          <td class="border border-slate-300 p-1.5 font-bold">${item.address || ''}</td>
+          <td class="border border-slate-300 p-1.5 text-center">${item.status === 'completed' ? '配達完了' : item.status === 'absent' ? '不在持戻' : '未配達'}</td>
+          <td class="border border-slate-300 p-1.5 text-center font-mono">${item.time || '--:--'}</td>
+          <td class="border border-slate-300 p-1.5">${item.memo || ''}</td>
+        </tr>
+      `).join('');
     }
 
-    async function sendToSpreadsheet() {
-      const prof = loadProfile();
-      if (!prof.gasUrl) {
-        showToast('先に「① 配達先」上部の設定でGAS URLを登録してください', '⚠️');
+    function copyReportText() {
+      const box = document.getElementById('lineReportBox');
+      box.select();
+      document.execCommand('copy');
+      showToast('日報文面をコピーしました！', 'success');
+    }
+
+    function sendLineDirect() {
+      const txt = document.getElementById('lineReportBox').value;
+      window.open(`https://line.me/R/msg/text/?${encodeURIComponent(txt)}`, '_blank');
+    }
+
+    function exportCsv() {
+      const items = getDayItems(selectedDate);
+      if (items.length === 0) return;
+      let csv = '\uFEFF記録日,配達先,状況,記録時刻,時間帯区分,メモ\n';
+      items.forEach(i => {
+        const st = i.status === 'completed' ? '配達完了' : i.status === 'absent' ? '不在持戻' : '未配達';
+        csv += `${selectedDate},"${(i.address || '').replace(/"/g, '""')}",${st},${i.time || ''},"${getTimeSlotLabel(i.time) || ''}","${(i.memo || '').replace(/"/g, '""')}"\n`;
+      });
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `配達完了記録_${selectedDate}.csv`;
+      a.click();
+    }
+
+    async function sendToGoogleSheet() {
+      const s = getSettings();
+      if (!s.gasUrl) {
+        document.getElementById('settingsAccordion').open = true;
+        showToast('スプレッドシート連携URLが未設定です。設定欄に入力してください', 'error');
         return;
       }
-
-      const dateStr = document.getElementById('target-date').value;
-      const rec = getRecord(dateStr);
-      const totalCount = rec.deliveries.length;
-      const completedCount = rec.deliveries.filter(d => d.status === 'completed').length;
-      const absentCount = rec.deliveries.filter(d => d.status === 'absent').length;
-      const totalRev = rec.revType === 'piece'
-        ? completedCount * (Number(rec.pieceRate) || 0)
-        : (Number(rec.fixedRevenue) || 0);
-      const totalExp = (Number(rec.expGas) || 0) + (Number(rec.expToll) || 0) + (Number(rec.expOther) || 0);
-
-      const deliverySummary = rec.deliveries.map((d, i) =>
-        `${i + 1}.${d.destination}(${d.status === 'completed' ? '完了 ' + d.completedTime : d.status === 'absent' ? '不在 ' + (d.absentTime || '') : '未配達'})`
-      ).join(' / ');
-
-      const getSlotLabel = (tm) => {
-        const idx = getTimeSlotIndex(tm);
-        const labels = ['午前(〜11:59)', '12-14時', '14-16時', '16-18時', '18-20時', '20時〜'];
-        return idx >= 0 ? labels[idx] : '時刻未記録';
-      };
-
-      const deliveryItems = rec.deliveries.map((d, i) => {
-        const tm = d.status === 'absent' ? (d.absentTime || '') : (d.completedTime || '');
-        return {
-          itemId: `${dateStr}_${String(i + 1).padStart(3, '0')}`,
-          date: dateStr,
-          driver: prof.driver || '未設定',
-          vehicle: prof.vehicle || '',
-          course: rec.courseName || '',
-          clientName: rec.clientType || '',
-          seqNo: i + 1,
-          destination: d.destination || '未入力',
-          status: d.status === 'completed' ? '配達完了' : d.status === 'absent' ? '不在持戻' : '未配達',
-          recordedTime: tm,
-          timeSlot: getSlotLabel(tm),
-          memo: d.memo || ''
-        };
-      });
+      const items = getDayItems(selectedDate);
+      const total = items.length;
+      const completed = items.filter(i => i.status === 'completed').length;
+      const absent = items.filter(i => i.status === 'absent').length;
+      const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
 
       const payload = {
-        date: dateStr,
-        company: prof.company,
-        office: prof.office,
-        driver: prof.driver,
-        vehicle: prof.vehicle,
-        routeCode: rec.courseName,
-        clientName: rec.clientType,
-        pkgTotal: totalCount,
-        pkgCompleted: completedCount,
-        pkgAbsent: absentCount,
-        deliveryDetails: deliverySummary,
-        deliveryItems: deliveryItems,
-        preRollCallExecutor: rec.preExecutor,
-        preRollCallMethod: rec.preMethod,
-        preAlcohol: rec.preAlcohol,
-        preDailyInspection: rec.preInspection,
-        preHealth: rec.preHealth,
-        preInstruction: rec.preInstruction,
-        postRollCallExecutor: rec.postExecutor,
-        postRollCallMethod: rec.postMethod,
-        postAlcohol: rec.postAlcohol,
-        postVehicleStatus: rec.postVehicle,
-        totalRevenue: totalRev,
-        expenseGas: Number(rec.expGas) || 0,
-        expenseToll: Number(rec.expToll) || 0,
-        expenseOther: Number(rec.expOther) || 0,
-        totalExpense: totalExp,
-        netProfit: totalRev - totalExp
+        date: selectedDate,
+        driver: s.driver || '未設定',
+        vehicle: s.vehicle || '未設定',
+        course: s.course || '通常便',
+        totalCount: total,
+        completedCount: completed,
+        absentCount: absent,
+        completionRate: rate,
+        items: items.map(i => ({
+          id: i.id,
+          address: i.address || '',
+          status: i.status === 'completed' ? '配達完了' : i.status === 'absent' ? '不在持戻' : '未配達',
+          time: i.time || '',
+          timeSlot: getTimeSlotLabel(i.time) || '未記録',
+          memo: i.memo || ''
+        }))
       };
 
-      showToast('スプレッドシートへ送信中...', '⏳');
       try {
-        await fetch(prof.gasUrl, {
+        await fetch(s.gasUrl, {
           method: 'POST',
           mode: 'no-cors',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        showToast('スプレッドシートへ送信しました！', '📊');
+        showToast('スプレッドシート（日次サマリー＋明細ログ）へ送信しました！', 'success');
       } catch (e) {
-        showToast('送信エラーが発生しました', '❌');
+        showToast('送信エラーが発生しました', 'error');
       }
     }
 
-    function renderMonthlySummary() {
-      const targetMonth = document.getElementById('target-date').value.slice(0, 7);
-      const all = getAllRecords();
-      let days = 0, rev = 0, exp = 0, deliv = 0;
-
-      Object.values(all).forEach(r => {
-        if (r.date && r.date.startsWith(targetMonth)) {
-          const comp = Array.isArray(r.deliveries) ? r.deliveries.filter(d => d.status === 'completed').length : 0;
-          if ((r.deliveries && r.deliveries.length > 0) || r.fixedRevenue > 0) days++;
-          const rRev = r.revType === 'piece' ? comp * (Number(r.pieceRate)||0) : (Number(r.fixedRevenue)||0);
-          const rExp = (Number(r.expGas)||0) + (Number(r.expToll)||0) + (Number(r.expOther)||0);
-          rev += rRev;
-          exp += rExp;
-          deliv += comp;
-        }
-      });
-
-      document.getElementById('monthly-summary-box').innerHTML = `
-        <div><p class="text-slate-500">稼働日数</p><p class="text-base font-extrabold text-slate-800">${days} 日</p></div>
-        <div><p class="text-slate-500">累計完了</p><p class="text-base font-extrabold text-emerald-700">${deliv} 件</p></div>
-        <div><p class="text-slate-500">累計売上</p><p class="text-base font-extrabold text-blue-700">¥${rev.toLocaleString()}</p></div>
-        <div><p class="text-slate-500">累計粗利</p><p class="text-base font-extrabold text-slate-900">¥${(rev - exp).toLocaleString()}</p></div>
-      `;
-    }
-
-    function exportCsv() {
-      const all = getAllRecords();
-      const prof = loadProfile();
-      const headers = ['記録日','ドライバー','車両番号','コース','No','配達先','状況','記録時間','備考'];
-      const rows = [];
-      Object.values(all).sort((a,b) => a.date.localeCompare(b.date)).forEach(r => {
-        (r.deliveries || []).forEach((d, idx) => {
-          const st = d.status === 'completed' ? '配達完了' : d.status === 'absent' ? '不在持戻' : '未配達';
-          const tm = d.status === 'absent' ? (d.absentTime || '') : (d.completedTime || '');
-          rows.push([r.date, prof.driver, prof.vehicle, r.courseName, idx + 1, d.destination, st, tm, d.memo]
-            .map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','));
-        });
-      });
-      const csv = '\uFEFF' + [headers.join(','), ...rows].join('\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `配達先完了記録_${getTodayStr()}.csv`;
-      a.click();
-      showToast('CSVファイルをダウンロードしました', '📥');
-    }
-
-    function copyGasScript() {
+    function copyDeliveryGasCode() {
       const code = `function doPost(e) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sumSheet = ss.getSheetByName("配達日次サマリー") || ss.getActiveSheet();
+    sumSheet.setName("配達日次サマリー");
+    var logSheet = ss.getSheetByName("配達明細ログ") || ss.insertSheet("配達明細ログ");
     var data = JSON.parse(e.postData.contents);
 
-    // 1. 日次サマリーシート（1日1行）
-    var summarySheet = ss.getSheetByName("配達日次サマリー") || ss.getActiveSheet();
-    summarySheet.setName("配達日次サマリー");
-    if (summarySheet.getLastRow() === 0) {
-      summarySheet.appendRow(["記録日","所属","営業所","乗務員名","車両番号","コース","荷主区分","総件数","配達完了数","不在持戻数","配達先・完了時間一覧","乗務前_執行者","乗務前_方法","乗務前_Alc","乗務前_点検","乗務前_健康","乗務前_指示","乗務後_執行者","乗務後_方法","乗務後_Alc","乗務後_車両状況","総売上","ガソリン代","高速代","その他経費","総経費","本日粗利"]);
-      summarySheet.getRange(1, 1, 1, 27).setBackground("#0f172a").setFontColor("#ffffff").setFontWeight("bold");
+    if (sumSheet.getLastRow() === 0) {
+      sumSheet.appendRow(["記録日", "ドライバー", "車両番号", "コース", "総件数", "配達完了", "不在持戻", "完了率(%)"]);
+      sumSheet.getRange(1, 1, 1, 8).setBackground("#0f172a").setFontColor("#ffffff").setFontWeight("bold");
     }
-    summarySheet.appendRow([
-      data.date, data.company, data.office, data.driver, data.vehicle, data.routeCode, data.clientName,
-      data.pkgTotal, data.pkgCompleted, data.pkgAbsent, data.deliveryDetails,
-      data.preRollCallExecutor, data.preRollCallMethod, data.preAlcohol, data.preDailyInspection, data.preHealth, data.preInstruction,
-      data.postRollCallExecutor, data.postRollCallMethod, data.postAlcohol, data.postVehicleStatus,
-      data.totalRevenue, data.expenseGas, data.expenseToll, data.expenseOther, data.totalExpense, data.netProfit
-    ]);
+    sumSheet.appendRow([data.date, data.driver, data.vehicle, data.course, data.totalCount, data.completedCount, data.absentCount, data.completionRate]);
 
-    // 2. AppSheet連携用：配達明細ログ（1配達先＝1行のデータベース構造）
-    var detailSheet = ss.getSheetByName("配達明細ログ");
-    if (!detailSheet) {
-      detailSheet = ss.insertSheet("配達明細ログ");
-      detailSheet.appendRow(["配達ID","記録日","乗務員名","車両番号","コース","荷主区分","No","配達先","状況","記録時間","時間帯区分","備考"]);
-      detailSheet.getRange(1, 1, 1, 12).setBackground("#1e3a8a").setFontColor("#ffffff").setFontWeight("bold");
+    if (logSheet.getLastRow() === 0) {
+      logSheet.appendRow(["配達ID", "記録日", "ドライバー", "コース", "配達先住所", "状況", "記録時刻", "時間帯区分", "メモ"]);
+      logSheet.getRange(1, 1, 1, 9).setBackground("#0369a1").setFontColor("#ffffff").setFontWeight("bold");
     }
-    if (Array.isArray(data.deliveryItems) && data.deliveryItems.length > 0) {
-      var rows = data.deliveryItems.map(function(item) {
-        return [
-          item.itemId, item.date, item.driver, item.vehicle, item.course, item.clientName,
-          item.seqNo, item.destination, item.status, item.recordedTime, item.timeSlot, item.memo
-        ];
+    if (Array.isArray(data.items)) {
+      data.items.forEach(function(item) {
+        logSheet.appendRow([item.id, data.date, data.driver, data.course, item.address, item.status, item.time, item.timeSlot, item.memo]);
       });
-      detailSheet.getRange(detailSheet.getLastRow() + 1, 1, rows.length, 12).setValues(rows);
     }
-
-    return ContentService.createTextOutput(JSON.stringify({status:"success"})).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({status: "success"})).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({status:"error", message:err.toString()})).setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({status: "error", message: err.toString()})).setMimeType(ContentService.MimeType.JSON);
   }
 }`;
-      navigator.clipboard.writeText(code).then(() => {
-        showToast('AppSheet対応GASコードをコピーしました！', '📋');
-      });
+      const ta = document.createElement('textarea');
+      ta.value = code;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast('AppSheet2シート対応GASコードをコピーしました！', 'success');
     }
 
-    window.addEventListener('DOMContentLoaded', () => {
-      const prof = loadProfile();
-      document.getElementById('prof-driver').value = prof.driver;
-      document.getElementById('prof-company').value = prof.company;
-      document.getElementById('prof-office').value = prof.office;
-      document.getElementById('prof-vehicle').value = prof.vehicle;
-      document.getElementById('prof-course').value = prof.course;
-      document.getElementById('prof-executor').value = prof.executor;
-      document.getElementById('prof-gas-url').value = prof.gasUrl;
-      updateHeaderInfo();
-
-      renderDestChips();
-
-      const dateInput = document.getElementById('target-date');
-      dateInput.value = getTodayStr();
-      dateInput.addEventListener('change', (e) => loadDateIntoForm(e.target.value));
-      loadDateIntoForm(dateInput.value);
-
-      window.addEventListener('scroll', () => {
-        const fab = document.getElementById('fab-top');
-        const y = Math.max(window.scrollY || 0, document.documentElement.scrollTop || 0, document.body.scrollTop || 0);
-        if (y > 80) {
-          fab.classList.remove('opacity-0', 'pointer-events-none');
-          fab.classList.add('opacity-100');
-        } else {
-          fab.classList.add('opacity-0', 'pointer-events-none');
-          fab.classList.remove('opacity-100');
-        }
-      });
-    });
+    function showToast(msg, type = 'info') {
+      const toast = document.getElementById('toastNotification');
+      const m = document.getElementById('toastMsg');
+      const i = document.getElementById('toastIcon');
+      const c = document.getElementById('toastContent');
+      m.textContent = msg;
+      if (type === 'success') {
+        i.textContent = '✅';
+        c.className = 'p-3.5 rounded-xl shadow-xl border text-xs font-bold flex items-center gap-2.5 bg-emerald-800 text-white border-emerald-600';
+      } else if (type === 'error') {
+        i.textContent = '⚠️';
+        c.className = 'p-3.5 rounded-xl shadow-xl border text-xs font-bold flex items-center gap-2.5 bg-rose-800 text-white border-rose-600';
+      } else {
+        i.textContent = 'ℹ️';
+        c.className = 'p-3.5 rounded-xl shadow-xl border text-xs font-bold flex items-center gap-2.5 bg-slate-900 text-white border-slate-700';
+      }
+      toast.classList.remove('opacity-0', 'pointer-events-none');
+      setTimeout(() => toast.classList.add('opacity-0', 'pointer-events-none'), 3500);
+    }
   </script>
 </body>
 </html>
