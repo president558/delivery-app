@@ -66,9 +66,12 @@
   <header class="bg-brand-900 text-white sticky top-0 z-30 shadow-md">
     <div class="max-w-3xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
       <div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
           <span class="text-[11px] px-2 py-0.5 bg-sky-500 text-slate-950 font-black rounded">地図ピン＆OCR</span>
           <h1 class="text-base sm:text-lg font-extrabold tracking-tight">配達記録・マップナビアプリ</h1>
+          <button type="button" onclick="openChangelogModal()" class="text-[11px] px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-400/50 font-extrabold rounded-full transition-colors">
+            🆕 v1.4 更新履歴
+          </button>
         </div>
         <p id="headerDriverLabel" class="text-xs text-slate-300 mt-0.5">ドライバー: 未設定 | コース: 通常便</p>
       </div>
@@ -324,7 +327,74 @@
       </section>
     </div>
 
+    <!-- フッター（更新履歴導線・BYOD免責表記） -->
+    <footer class="pt-2 pb-6 text-center text-xs text-slate-500 space-y-2 no-print">
+      <div>
+        <button type="button" onclick="openChangelogModal()" class="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 font-bold rounded-xl border border-slate-300 shadow-sm inline-flex items-center gap-1.5">
+          <span>📋</span>
+          <span>アプリの更新履歴（リリースノート）を見る</span>
+        </button>
+      </div>
+      <p class="text-[11px] text-slate-400">データは端末内（LocalStorage）に保存され、カメラ撮影画像は保存されません。</p>
+    </footer>
+
   </main>
+
+  <!-- 更新履歴（リリースノート）モーダル -->
+  <div id="changelogModal" class="fixed inset-0 bg-slate-950/80 z-50 hidden flex items-center justify-center p-3 backdrop-blur-sm">
+    <div class="bg-white rounded-2xl max-w-md w-full max-h-[88dvh] overflow-y-auto shadow-2xl border border-slate-200 p-4 space-y-3.5">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+        <h3 class="text-sm sm:text-base font-extrabold text-slate-900 flex items-center gap-1.5">
+          <span>📋</span>
+          <span>配達アプリ 更新履歴（リリースノート）</span>
+        </h3>
+        <button type="button" onclick="closeChangelogModal()" class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-bold">✕ 閉じる</button>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <div class="p-3 rounded-xl bg-emerald-50 border border-emerald-200 space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="font-black text-emerald-950">v1.4（最新）</span>
+            <span class="px-2 py-0.5 bg-emerald-600 text-white text-[10px] font-bold rounded">NEW</span>
+          </div>
+          <ul class="list-disc list-inside text-emerald-900 space-y-0.5 leading-relaxed">
+            <li><strong>個人情報保護・住所自動抽出フィルター搭載：</strong>伝票OCR読取時に「〇〇 様」「TEL」「追跡番号」を自動除外し、住所のみを抽出（全文切替ボタン付き）。</li>
+            <li><strong>更新履歴モーダルを追加：</strong>アプリの進化履歴を画面上からいつでも確認可能に。</li>
+          </ul>
+        </div>
+
+        <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+          <div class="font-black text-slate-900">v1.3 — 地図ピン立て2wayナビ機能</div>
+          <ul class="list-disc list-inside text-slate-700 space-y-0.5 leading-relaxed">
+            <li>「② 地図ピン」タブ（OpenStreetMap × 国土地理院住所検索）を追加し、未配達・完了・不在を色分けピン表示。</li>
+            <li>各配達先カードに「🗺️ Googleマップ」ピン立て＆即ナビボタンを追加。</li>
+          </ul>
+        </div>
+
+        <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+          <div class="font-black text-slate-900">v1.2 — 配達先別在宅率分析 ＆ AppSheet 2シート連携</div>
+          <ul class="list-disc list-inside text-slate-700 space-y-0.5 leading-relaxed">
+            <li>「③ 在宅分析」タブに建物・配達先ごとの個別狙い目時間帯判定と6時間帯ヒートグラフを実装。</li>
+            <li>GAS連携を「配達日次サマリー＋配達明細ログ」の2シート自動出力へ進化。</li>
+          </ul>
+        </div>
+
+        <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+          <div class="font-black text-slate-900">v1.1 — カメラOCR ＆ バーコード/QRマルチスキャン</div>
+          <ul class="list-disc list-inside text-slate-700 space-y-0.5 leading-relaxed">
+            <li>日本語OCR（Tesseract.js）とバーコード/QR読取（html5-qrcode）の3ルート起動に対応。</li>
+          </ul>
+        </div>
+
+        <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+          <div class="font-black text-slate-900">v1.0 — 初版リリース</div>
+          <ul class="list-disc list-inside text-slate-700 space-y-0.5 leading-relaxed">
+            <li>配達先リスト、完了/不在ワンタップ打刻、LINE日報・CSV出力を実装。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- カメラ読取モーダル（日本語OCR ＋ バーコード/QR 3ルート対応） -->
   <div id="cameraModal" class="fixed inset-0 bg-slate-950/80 z-50 hidden flex items-center justify-center p-3 backdrop-blur-sm">
@@ -374,9 +444,27 @@
           ⏳ 日本語AI文字認識を実行中...（数秒お待ちください）
         </div>
 
+        <!-- 個人情報保護：住所のみ自動抽出フィルター設定 -->
+        <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 space-y-1.5">
+          <div class="flex items-center justify-between gap-2">
+            <label class="flex items-center gap-1.5 text-xs font-extrabold text-emerald-950 cursor-pointer select-none">
+              <input type="checkbox" id="chkAddressOnlyFilter" checked onchange="applyOcrFilterMode()" class="w-4 h-4 accent-emerald-700 rounded">
+              <span>🛡️ 住所のみ自動抽出（宛名・個人名を自動除外）</span>
+            </label>
+          </div>
+          <div id="ocrFilterActionRow" class="hidden flex items-center justify-end gap-1.5 pt-1 border-t border-emerald-200/70">
+            <button type="button" onclick="applyOcrFilterMode(true)" class="px-2 py-1 bg-emerald-700 text-white font-bold rounded-lg text-[11px]">
+              🏠 住所行だけ残す
+            </button>
+            <button type="button" onclick="applyOcrFilterMode(false)" class="px-2 py-1 bg-white text-slate-700 border border-slate-300 font-bold rounded-lg text-[11px]">
+              📄 読取全文を表示
+            </button>
+          </div>
+        </div>
+
         <div>
-          <label class="block text-[11px] font-bold text-slate-700 mb-1">読み取った住所・宛先（不要行を消して編集可能）</label>
-          <textarea id="ocrResultText" rows="3" placeholder="ここに読み取った住所・名前が表示されます" class="w-full p-2.5 border-2 border-slate-200 rounded-xl text-xs bg-slate-50 focus:bg-white"></textarea>
+          <label class="block text-[11px] font-bold text-slate-700 mb-1">抽出された配達先住所（必要に応じて微修正可能）</label>
+          <textarea id="ocrResultText" rows="3" placeholder="ここに自動抽出された住所が表示されます" class="w-full p-2.5 border-2 border-slate-200 rounded-xl text-xs bg-slate-50 focus:bg-white"></textarea>
         </div>
 
         <button type="button" onclick="confirmOcrToList()" class="w-full py-3 bg-slate-900 hover:bg-slate-800 text-white font-extrabold rounded-xl text-xs sm:text-sm shadow-md">
@@ -418,6 +506,7 @@
     let leafletMarkers = [];
     let activeStream = null;
     let html5QrScanner = null;
+    let lastRawOcrText = '';
 
     function getTodayStr() {
       const d = new Date();
@@ -574,6 +663,16 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
       document.documentElement.scrollTo({ top: 0, behavior: 'smooth' });
       document.body.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function openChangelogModal() {
+      const m = document.getElementById('changelogModal');
+      if (m) m.classList.remove('hidden');
+    }
+
+    function closeChangelogModal() {
+      const m = document.getElementById('changelogModal');
+      if (m) m.classList.add('hidden');
     }
 
     function switchTab(tabId) {
@@ -1032,17 +1131,53 @@
     async function runTesseractOnSource(source) {
       const prog = document.getElementById('ocrProgressBox');
       const out = document.getElementById('ocrResultText');
+      const actionRow = document.getElementById('ocrFilterActionRow');
       prog.classList.remove('hidden');
       try {
         const res = await Tesseract.recognize(source, 'jpn+eng');
         const cleaned = (res.data.text || '').replace(/\n{2,}/g, '\n').trim();
-        out.value = cleaned;
-        showToast('文字を読み取りました！内容を確認してリストへ追加してください', 'success');
+        lastRawOcrText = cleaned;
+        if (actionRow) actionRow.classList.remove('hidden');
+
+        const useFilter = document.getElementById('chkAddressOnlyFilter')?.checked ?? true;
+        out.value = useFilter ? extractAddressLinesOnly(cleaned) : cleaned;
+        showToast(useFilter ? '住所のみを自動抽出しました（宛名は除外済）' : '文字を読み取りました！', 'success');
       } catch (e) {
         showToast('読み取りに失敗しました。明るい場所で再度お試しください', 'error');
       } finally {
         prog.classList.add('hidden');
       }
+    }
+
+    // 個人情報（宛名・電話番号・追跡番号）を除外し、住所・建物名の行だけを抽出するフィルター
+    function extractAddressLinesOnly(rawText) {
+      if (!rawText) return '';
+      const lines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const addrKeywords = /(〒\s*\d{3}[-－]\d{4}|[都道府県]|[市区町村郡]|丁目|番地|号|マンション|ハイツ|コーポ|メゾン|アパート|レジデンス|ビル|荘|棟|[0-9０-９]+[-－][0-9０-９]+)/;
+      const excludeKeywords = /(様$|御中$|行$|宛$|TEL|電話|携帯|お問い合わせ|伝票番号|追跡|荷物|品名|配達指定|時間帯|午前中|取扱|注意|サイズ|重量|着払|元払)/i;
+
+      const filtered = lines.filter(line => {
+        if (excludeKeywords.test(line)) return false;
+        if (/^[\d\-\s\(\)]+$/.test(line) && line.length >= 8) return false; // 電話番号・追跡番号のみの行を除外
+        return addrKeywords.test(line);
+      });
+
+      if (filtered.length > 0) {
+        // 郵便番号行と住所行が分かれている場合は1行に結合して地図ピン精度を高める
+        return filtered.join(' ').replace(/〒\s*\d{3}[-－]\d{4}\s*/g, '').trim();
+      }
+      // 該当キーワードが取れなかった場合は「様」「TEL」行だけ落として返す
+      return lines.filter(l => !excludeKeywords.test(l)).join('\n');
+    }
+
+    function applyOcrFilterMode(forceState) {
+      const chk = document.getElementById('chkAddressOnlyFilter');
+      const out = document.getElementById('ocrResultText');
+      if (typeof forceState === 'boolean' && chk) {
+        chk.checked = forceState;
+      }
+      if (!lastRawOcrText || !out) return;
+      out.value = chk && chk.checked ? extractAddressLinesOnly(lastRawOcrText) : lastRawOcrText;
     }
 
     function confirmOcrToList() {
